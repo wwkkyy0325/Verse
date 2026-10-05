@@ -36,12 +36,16 @@ fn temp_file(name: &str) -> PathBuf {
 /// The leading silence is the point: it makes the reported span offset
 /// observable, which is what pins down what the detector means by a start
 /// index.
-fn silence_then_speech(silence_secs: u32) -> Option<PathBuf> {
+///
+/// `name` keeps tests from sharing a temp file. They run in parallel and each
+/// removes its own input when done, so a shared path means one test deleting
+/// another's file mid-run.
+fn silence_then_speech(silence_secs: u32, name: &str) -> Option<PathBuf> {
     if !ffmpeg_available() || !speech_sample().is_file() {
         return None;
     }
 
-    let out = temp_file("offset.wav");
+    let out = temp_file(name);
     let status = Command::new(locate_ffmpeg().ok()?)
         .arg("-hide_banner")
         .arg("-loglevel")
@@ -86,7 +90,7 @@ fn span_offsets_accumulate_from_the_stream_start() {
         eprintln!("skipping: VAD model not present");
         return;
     }
-    let Some(padded) = silence_then_speech(2) else {
+    let Some(padded) = silence_then_speech(2, "offset.wav") else {
         eprintln!("skipping: ffmpeg or speech sample unavailable");
         return;
     };
@@ -126,12 +130,53 @@ fn span_offsets_accumulate_from_the_stream_start() {
 }
 
 #[test]
+fn span_timestamps_stay_within_the_audio() {
+    if !vad_model().is_file() {
+        eprintln!("skipping: VAD model not present");
+        return;
+    }
+    let Some(audio) = silence_then_speech(1, "carry.wav") else {
+        eprintln!("skipping: ffmpeg or speech sample unavailable");
+        return;
+    };
+
+    let mut source = FfmpegDecoder::open(&audio, AudioFormat::TARGET).expect("decode audio");
+    let mut total_samples = 0usize;
+    let mut vad = SileroVad::load(&vad_model(), AudioFormat::TARGET).expect("load VAD");
+
+    let mut spans = Vec::new();
+    while let Some(chunk) = source.next_chunk().expect("chunk") {
+        total_samples += chunk.samples.len();
+        vad.accept(&chunk).expect("feed VAD");
+        spans.extend(vad.take());
+    }
+    spans.extend(vad.finish());
+
+    let audio_secs = total_samples as f64 / RATE as f64;
+
+    for span in &spans {
+        let start = span.start.as_secs_f64();
+        let end = start + span.samples.len() as f64 / RATE as f64;
+        eprintln!(
+            "span: start={start:.3}s end={end:.3}s len={:.3}s  (audio is {audio_secs:.3}s)",
+            span.samples.len() as f64 / RATE as f64
+        );
+        assert!(
+            end <= audio_secs + 0.05,
+            "span ending at {end:.3}s exceeds the {audio_secs:.3}s of audio"
+        );
+    }
+
+    let _ = std::fs::remove_file(&audio);
+}
+
+#[test]
 fn spans_carry_recognizable_audio() {
     if !vad_model().is_file() {
         eprintln!("skipping: VAD model not present");
         return;
     }
-    let Some(audio) = silence_then_speech(1) else {
+    let Some(audio) = silence_then_speech(1, "timestamps.wav") else {
         eprintln!("skipping: ffmpeg or speech sample unavailable");
         return;
     };
