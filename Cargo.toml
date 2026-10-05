@@ -5,8 +5,10 @@ members = [
     "crates/verse-audio",
     "crates/verse-asr",
     "crates/verse-model",
+    "crates/verse-pipeline",
     "crates/verse-cli",
     "crates/verse-app",
+    "crates/verse-bench",
 ]
 
 [workspace.package]
@@ -20,6 +22,7 @@ verse-core = { path = "crates/verse-core" }
 verse-audio = { path = "crates/verse-audio" }
 verse-asr = { path = "crates/verse-asr" }
 verse-model = { path = "crates/verse-model" }
+verse-pipeline = { path = "crates/verse-pipeline" }
 
 # Pinned deliberately: the native library archive is version-locked to this
 # version, so a bump means pre-staging a differently-named archive.

@@ -60,6 +60,39 @@ entry above.
 
 Upstream: <https://github.com/k2-fsa/sherpa-onnx>
 
+### Tauri — application shell
+
+**MIT OR Apache-2.0**, the same terms as this project. No attribution
+obligation, no copyleft, nothing to discharge in the interface. This is the
+reason the shell is Tauri rather than a GUI toolkit with a bespoke licence.
+
+Upstream: <https://github.com/tauri-apps/tauri>
+
+### WebView2 — required at runtime on Windows
+
+Tauri does not ship a browser engine. It renders the interface in the system
+webview, which on Windows is **Microsoft Edge WebView2** — a Microsoft
+component, distributed under Microsoft's own terms, free to use and
+redistribute.
+
+Where it comes from, and the reason this is listed as a *requirement* rather
+than a *dependency*:
+
+- **Windows 11** — preinstalled.
+- **Windows 10, version 1803 or later** — distributed as part of the operating
+  system.
+- **Anything older, including Windows 7 and 8** — must be installed. Tauri's
+  installer can bootstrap it, but Microsoft has ended WebView2 support on
+  Windows 7, so this is a genuine floor rather than a formality.
+
+**This is the constraint to weigh against the "runs on old machines" goal**
+(`design.md` §3, C4). The pipeline itself is happy on a 2013 CPU; the shell is
+not happy on a 2013 *operating system*. Windows 10 1803 shipped in April 2018.
+Decide before shipping whether that floor is acceptable, and say so in the
+installer rather than failing at launch.
+
+Upstream: <https://learn.microsoft.com/microsoft-edge/webview2/>
+
 ### Paraformer-large — model weights
 
 **Apache-2.0.** The cleanest license of the bunch, which is why it remains the

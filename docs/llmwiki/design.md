@@ -1,6 +1,6 @@
 # Verse — Design
 
-Offline-first Chinese speech-to-text. Status: design approved, P1a not yet started.
+Offline-first Chinese speech-to-text. Status: P1a complete, P1b (GUI) in progress.
 
 ## 1. What this is
 
@@ -49,7 +49,7 @@ verse-audio    decode + convert (ffmpeg sidecar), VAD segmentation         [lib]
 verse-asr      Engine implementations — sherpa-onnx FFI lives here         [lib]
 verse-model    Model catalog + multi-source resumable downloader           [lib]
 verse-cli      Command-line entry point                                    [bin]
-verse-app      slint GUI                                                   [bin]
+verse-app      Tauri 2 shell — Rust backend + web frontend in `ui/`        [bin]
 ```
 
 Three boundaries justify the splits:
@@ -57,6 +57,26 @@ Three boundaries justify the splits:
 - **All traits live in `verse-core`; only implementations live elsewhere.** `AudioSource`, `Segmenter`, `AsrEngine`, `TextProcessor` and `TextSink` are defined there as pure abstractions. This is what lets the registry (§4.6) hold implementations without `verse-core` ever linking sherpa-onnx, and it is what makes swapping an engine or inserting a text stage a configuration change rather than a code change.
 - `verse-model` isolates all network access. This is what makes the offline guarantee structural (§4.5).
 - `verse-audio` and `verse-asr` are the two crates that touch native code — ffmpeg through a child process, sherpa-onnx through FFI. `verse-core` unit tests therefore link neither, and stay fast.
+
+`verse-app` is a **Tauri 2** application. The interface is a web frontend —
+Svelte 5 and TypeScript, built by Vite — rendered in the system webview, and
+this crate is the backend it calls. Two reasons it won over a native toolkit:
+the licence is MIT/Apache-2.0, identical to this project's, so the shell adds
+no obligation of its own; and the development loop has real hot reload, which
+a compiled GUI toolkit cannot offer.
+
+**The cost is WebView2 on Windows.** Tauri ships no browser engine, so the
+supported operating system floors at Windows 10 1803 rather than at the
+hardware floor the pipeline is built for. On a 2013 CPU with a 2013 operating
+system, the recognizer would run and the window would not. That is recorded in
+`THIRD_PARTY_NOTICES.md` as a decision to make deliberately rather than
+discover at launch.
+
+The interface, its tokens and the contract between it and the pipeline are in
+`ui-design.md`. Note what survived the move: the state model in
+`crates/verse-app/src/state.rs` is plain Rust over plain values with no
+framework types in it, so it crossed from a native toolkit to a web frontend
+unchanged. That was the point of writing it that way.
 
 ### 4.2 Core traits
 

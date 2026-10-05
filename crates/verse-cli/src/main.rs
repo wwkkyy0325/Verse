@@ -181,6 +181,7 @@ fn transcribe(options: &TranscribeOptions) -> Result<(), Box<dyn std::error::Err
         &EngineConfig {
             model_dir,
             threads: hardware.engine_threads(),
+            inverse_text_normalization: true,
         },
     )?;
 

@@ -138,3 +138,219 @@ Two smaller things the same work exposed: progress reporting was calling back on
 **Hardware detection reports capability and stops there.** It does not know what a model needs — that belongs to whoever chooses one. A reduced machine runs smaller models and says why; detection never fails and never blocks startup.
 
 **Still outstanding for P1a's exit criteria:** a long-file run confirming flat memory, which needs a real recording. And two items from the downloader plan were not built: SHA-256 verification (length checking catches truncation, not corruption that preserves length) and the manual-import fallback (which needs a UI to be meaningful).
+
+## 2026-10-05 — P1b started: interface designed, state model built
+
+**GUI framework: Slint, and it is not a permissive licence.** `design.md` §4.1
+had named Slint since the first draft without recording what it costs. It is
+triple-licensed — GPLv3, which would force the whole distributed work under the
+GPL and is incompatible with this project's Apache-2.0; a commercial licence;
+or a royalty-free desktop licence that **requires attribution**. Verse takes the
+third. The obligation is an `AboutSlint` widget reachable from the About dialog,
+which is where the FunASR attribution has to live anyway, so one dialog
+discharges both. Recorded in `THIRD_PARTY_NOTICES.md` with the other options
+written out, because the next person to read the licence text will have the same
+question.
+
+Its technical fit is better than expected: the femtovg and software renderers
+are pure Rust, so this introduces **no C++ toolchain requirement** — the
+property `sherpa-onnx` was chosen to preserve. The Skia renderer is the one that
+needs MSVC and its feature is off. The software renderer also matters on its own
+terms: a 2013 machine with weak OpenGL can be switched to pure CPU raster at
+runtime, which is the difference between a window and no window.
+
+**`ui-design.md` is the frontend design.** Six requirements derived from the
+"no technical background" brief rather than asserted as taste — one-step default
+path, no user-facing technical decisions, no jargon, everything over a second
+cancellable, progress as visible output rather than motion, every failure naming
+a next action. Five screens, a token set, a component list, and the copy rules.
+The point of writing it first is that P6 and P3 are the two that get violated
+under schedule pressure, and a document is what makes violating them visible.
+
+**The state model came before the window.** `state.rs` is `AppState`, `Screen`,
+`Working`, `Done`, `Failed`, `Recovery` and `Effect` — ordinary Rust over
+ordinary values, no Slint import, side effects named and returned rather than
+performed. 23 tests drive the whole machine without opening anything. Steps 2
+and 3 of the task need a human looking at a screen; this step did not, so it
+went first and the round trip with a person is now about only the things a
+person can judge.
+
+**Two things the design got wrong, corrected by building it.** A `Phase` enum
+distinguishing decoding from recognition was dropped — the event vocabulary
+carries no stage event, and adding one to `verse-core` to drive a label the user
+cannot act on is a bad trade. `Working::has_output()` derives the distinction
+that was actually needed. And the planned `UiMessage` enum between `EventBus`
+and the UI was cut: the bus already carries the shape both halves agreed on, and
+translating between two identical shapes is only somewhere for them to drift
+apart.
+
+**Cancelling now waits for acknowledgement.** The first draft returned to the
+drop target on the click. That shows an idle screen while the job is still
+winding down — a lie, and an invitation to start a second job on top of the
+first. It sets `stopping` and waits for `JobCancelled`, at a cost of up to a
+second of "正在停止…".
+
+**Noted and left alone:** `verse_core::ModelState` and the
+`ModelStateChanged` event are referenced only by a test inside `verse-core`;
+nothing produces them. The downloader has its own `DownloadState` and the UI
+reads that, because `ModelState` cannot express progress. One unused
+model-state type now sits beside a used one. Worth consolidating; not worth
+doing as a side effect of this step.
+
+**Awaiting a human:** step 2, whether Chinese renders. `app.slint` is a
+specimen page — punctuation, traditional/simplified mixing, rare glyphs, both
+text sizes — with an explicit font-family list, because which CJK font the
+platform fallback picks is not something to leave to chance. Building cannot
+answer this; looking at it can.
+
+## 2026-10-05 — Frontend switched to Tauri 2 and Svelte
+
+The native-toolkit decision lasted one session. The requirement it missed was
+not stated until it was: the interface should be written in a browser language
+and should have a hot-reloading dev loop. A compiled GUI toolkit offers
+neither, and the DSL is the wrong kind of constraint for iterating on a layout.
+
+**What replaced it: Tauri 2 + Svelte 5 + TypeScript, built by Vite.** The Rust
+crates below the interface are untouched. On licensing this is a straight
+improvement — Tauri is MIT/Apache-2.0 and Svelte is MIT, matching the project,
+so the attribution obligation the previous toolkit required is gone, along with
+the About dialog requirement it created. `THIRD_PARTY_NOTICES.md` loses an
+entry rather than gaining one.
+
+**What it costs: WebView2.** Tauri ships no browser engine, so on Windows the
+supported *operating system* floors at Windows 10 1803, while the pipeline is
+happy on 2013 hardware. That gap is a product decision, not a technical one,
+and it is recorded as an open question rather than buried. WebView2 is also
+multi-process, so the empty-window memory baseline is a step back from a native
+toolkit — it does not threaten the no-leak constraint, but "lightweight" takes
+a hit that should be measured rather than assumed.
+
+**The state model crossed unchanged.** `state.rs` was written with no framework
+types in it, and it moved from a native toolkit to a web frontend without an
+edit. That was the entire argument for writing it that way, and it is now a
+demonstrated result rather than a claim.
+
+**The dev server port got a contract, after the first attempt went wrong.**
+Vite's default 5173 was already occupied by an unrelated dev server, and the
+window silently attached itself to *that* project — a failure indistinguishable
+from success. `tauri.conf.json` is now the single place the port exists;
+`vite.config.ts` reads `build.devUrl` for its own `server.port` and refuses to
+start without it. `strictPort` turns a busy port into an error instead of a
+quiet relocation, and the host is an explicit `127.0.0.1` so `localhost` cannot
+resolve to `::1` against an IPv4 listener. Port 17321: above 1024, below
+Windows' dynamic range, and not a default of anything a developer is likely to
+have running.
+
+**The icon is generated by a script, not checked in as a binary.**
+`tools/make-icon.mjs` draws it with signed-distance functions and writes the
+PNG itself. It produced two bugs worth keeping: supersampling offsets applied
+in pixel units instead of normalised ones, which magnified and cropped the
+mark, and a capsule distance written in the rounded-box form — that is
+`|dx| + |dy|`, which is a diamond. Both were caught by looking at the output,
+and both are commented where they were made.
+
+**Also:** the provisional scaffolding from `create-vite` was removed rather
+than left in place, and `node_modules/` and the build output are ignored.
+
+**Awaiting a human:** step 3, Chinese renders and the palette is readable.
+Everything else in the loop — compilation, window, IPC, port agreement — is
+verified by machine.
+
+## 2026-10-06 — Interface rebuilt on shadcn-svelte
+
+The requirement was to stop hand-grinding the interface and stand on something
+mature. **shadcn-svelte** was the answer, mostly because of how it delivers:
+components are written into `src/lib/components/ui/` as source rather than
+installed as a dependency, so "take the whole thing" is literal — the code is
+ours, and there is no upstream to fork.
+
+Eight components — button, card, dialog, progress, scroll-area, separator,
+alert, sonner — cover all five screens. Tailwind v4 came with them, and the
+hand-written `tokens.css` is gone, replaced by shadcn's CSS-variable theme.
+
+**The preset took a detour worth recording.** `init` demands a `--preset`, and
+a preset turns out to be a base62-encoded config blob generated by a *website*
+— there is no list of valid names, and an invalid one only prints "not a valid
+preset" before falling back to an interactive prompt that does not read stdin.
+Rather than guess, the CLI's own package was unpacked and `encodePreset()` was
+called directly to produce `bdxlHoz4q`: neutral base, blue accent, **noto-sans**,
+lucide icons. That is the honest route and it is reproducible, which guessing
+would not have been.
+
+**Two configuration traps, both silent until they are not:**
+
+- shadcn's CLI reads `paths` from the *root* `tsconfig.json`. The Vite template
+  uses project references, so the real config lives in `tsconfig.app.json` and
+  the root file has no `compilerOptions` at all. The CLI refuses to write
+  anything until the alias is declared in both, and nothing warns about the
+  duplication.
+- TypeScript 6 rejects `baseUrl` as deprecated. The `paths` entries are
+  relative, so it is not needed — but every shadcn installation guide still
+  includes it.
+
+**The font default was 400 kB of glyphs nobody would draw.** shadcn installs
+`@fontsource-variable/noto-sans` wholesale, which pulls eight subsets —
+Devanagari, Cyrillic in two blocks, Greek in two, Vietnamese, Latin extended —
+into every build. A Chinese transcription tool draws none of them. Pointing at
+the single Latin file took the payload from ~440 kB to 36 kB. Full-width
+punctuation falls outside the Latin ranges and reaches the Chinese system font
+anyway, which renders it better to begin with.
+
+**`strictPort` earned its place immediately.** Relaunching hit "Port 17321 is
+already in use" — a `vite` child process from an earlier run had survived its
+parent being killed. That is exactly the failure the setting exists for: with
+Vite's default behaviour the server would have moved to 17324 and the window
+would have opened blank, with no indication why. The orphan was identified by
+port and removed.
+
+**Awaiting a human:** the same question as before, now against a real
+component set — does Chinese render correctly, and is the palette readable in
+both light and dark.
+
+## 2026-10-06 — The path is connected: drop a file, get text
+
+The specimen page is gone and the interface now does the one thing it exists
+for. Drop an audio file on the window, or click to choose one, and the
+transcript appears as it is recognised.
+
+**Rust owns the state; the window holds a copy.** `state.rs` gained an
+`Applied` return from `apply()`, saying what visibly changed — the screen, one
+more segment, progress — and the bridge turns that into an update. Not a
+snapshot: a two-hour recording is a few thousand segments, and resending the
+list to move one number is not affordable. `Applied` carries no serialization,
+so the state machine still knows nothing about the window.
+
+**Three new files, one direction each:**
+
+- `pipeline.rs` — the same chain `verse transcribe` runs, with progress
+  published to the bus instead of printed. It is a second copy of that
+  orchestration, which is a real cost; the CLI will want to move onto it.
+- `bridge.rs` — a worker thread that runs a job, and a forwarding thread that
+  drains the bus into the state and out to the window.
+- Capabilities and the dialog plugin, so the window may open a file picker.
+
+**A test caught a contract bug immediately.** Nothing connects the Rust update
+types to the TypeScript that reads them: a renamed field compiles on both
+sides and fails at runtime, in a window, as blank values. So the JSON shape is
+now asserted directly. The very first run failed — `rename_all` on an enum
+renames its *variants*, not their fields, so the backend was sending
+`start_ms` while the frontend read `startMs`. Every timestamp would have been
+`undefined`. Both facts are commented where they bit.
+
+**Dark is the default, not a preference.** The `dark` class sits on the root
+element rather than being resolved from the OS.
+
+**Two smaller things.** The decoder reports no total length, so a percentage
+progress bar is not available without a probe pass over the file; the header
+shows elapsed time and recognised segment count instead, which is honest and
+free. And a retry needs the full path while the interface is deliberately only
+ever sent file *names* — the window keeps the path it was handed for its own
+use.
+
+**A plugin version trap:** `cargo add tauri-plugin-dialog` selects
+`2.0.0-rc.8`. Pinned to `2` instead.
+
+**Still open from this step:** export is not built. The transcript is on
+screen and selectable, but there is no way to write it to a file yet — which
+is the `verse-core::export` code that already exists and is tested, waiting
+for a button.

@@ -187,6 +187,7 @@ mod tests {
         let cfg = EngineConfig {
             model_dir: PathBuf::from("."),
             threads: 2,
+            inverse_text_normalization: true,
         };
         let engine = registry
             .create_engine("stub", &cfg)

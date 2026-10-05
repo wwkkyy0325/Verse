@@ -1,0 +1,12 @@
+[package]
+name = "verse-pipeline"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Transcription orchestration shared by the CLI, the application and the benchmark"
+
+[dependencies]
+verse-core.workspace = true
+verse-audio.workspace = true
+verse-asr.workspace = true

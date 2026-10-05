@@ -36,6 +36,23 @@ const MAX_SPAN_SECONDS: f32 = 20.0;
 /// audio is better".
 const PAD_SECONDS: f32 = 0.4;
 
+/// Where the detector decides a frame is speech.
+///
+/// Below the usual 0.5 on purpose: being slow to start a span costs text,
+/// being slow to end one only costs a little silence. Exposed as a constant
+/// rather than buried because it is the first thing to reach for when whole
+/// utterances come back empty — see [`SileroVad::load_with`].
+pub const DEFAULT_THRESHOLD: f32 = 0.3;
+
+/// Silence long enough to end a span.
+const MIN_SILENCE_SECONDS: f32 = 0.25;
+
+/// Speech shorter than this is discarded as a noise.
+///
+/// Worth knowing when short utterances come back empty: a clipped 好 or 对
+/// can fall under it and disappear entirely.
+const MIN_SPEECH_SECONDS: f32 = 0.25;
+
 /// Silero VAD, presented as a [`Segmenter`].
 pub struct SileroVad {
     inner: VoiceActivityDetector,
@@ -54,6 +71,27 @@ pub struct SileroVad {
 impl SileroVad {
     /// Load the Silero VAD model and prepare to segment `format` audio.
     pub fn load(model: &Path, format: AudioFormat) -> Result<Self> {
+        Self::load_with(model, format, DEFAULT_THRESHOLD)
+    }
+
+    /// Load with an explicit speech threshold.
+    ///
+    /// The threshold is the knob that decides what counts as speech at all.
+    /// Too high and quiet or unusual speech is discarded before the recogniser
+    /// ever sees it — which shows up not as a wrong transcript but as no
+    /// transcript, the hardest kind of failure to notice from a sample.
+    pub fn load_with(model: &Path, format: AudioFormat, threshold: f32) -> Result<Self> {
+        // Checked here rather than left to sherpa-onnx, which refuses the same
+        // values but reports them as "failed to load VAD model" — sending
+        // anyone who reads that message to inspect a model that is perfectly
+        // fine. Its accepted floor is somewhere just above 0.01.
+        if !(0.02..=1.0).contains(&threshold) {
+            return Err(Error::new(
+                ErrorKind::Model,
+                format!("VAD threshold {threshold} is outside the usable range 0.02–1.0"),
+            ));
+        }
+
         if !model.is_file() {
             return Err(Error::new(
                 ErrorKind::Model,
@@ -71,11 +109,9 @@ impl SileroVad {
         let config = VadModelConfig {
             silero_vad: SileroVadModelConfig {
                 model: Some(model_path.to_string()),
-                // Below the usual 0.5: being slow to start a span costs text,
-                // being slow to end one only costs a little silence.
-                threshold: 0.3,
-                min_silence_duration: 0.25,
-                min_speech_duration: 0.25,
+                threshold,
+                min_silence_duration: MIN_SILENCE_SECONDS,
+                min_speech_duration: MIN_SPEECH_SECONDS,
                 // Silero v5 works on 512-sample windows at 16 kHz.
                 window_size: 512,
                 max_speech_duration: MAX_SPAN_SECONDS,

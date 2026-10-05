@@ -1,0 +1,18 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.app.json" },
+    { "path": "./tsconfig.node.json" }
+  ],
+  /* This root file exists only to reference the two real configs, so it takes
+   * no part in type checking — but shadcn-svelte's CLI reads `paths` from
+   * here and nowhere else, and refuses to write components without it. The
+   * copy in tsconfig.app.json is the one the compiler uses; keep them equal.
+   * See ui-design.md §6. */
+  "compilerOptions": {
+    "paths": {
+      "$lib": ["./src/lib"],
+      "$lib/*": ["./src/lib/*"]
+    }
+  }
+}

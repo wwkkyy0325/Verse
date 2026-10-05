@@ -1,0 +1,3 @@
+# Dependencies and build output. The sources under src/ are committed.
+node_modules
+dist

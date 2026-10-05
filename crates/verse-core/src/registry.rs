@@ -10,6 +10,15 @@ pub struct EngineConfig {
     /// Directory containing the model files.
     pub model_dir: PathBuf,
     pub threads: usize,
+    /// Whether to normalise written forms: 十七万 to 17万, 百分之四 to 4%.
+    ///
+    /// Exposed because it is not a recognition decision. Turning it off
+    /// changes how a number is written, never whether it was heard — so a
+    /// benchmark comparing against transcripts that spell numbers out has to
+    /// be able to switch it off, or it scores formatting instead of accuracy.
+    ///
+    /// Engines without such a mode ignore it.
+    pub inverse_text_normalization: bool,
 }
 
 /// Configuration handed to a source factory.

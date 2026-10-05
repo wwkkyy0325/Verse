@@ -6,5 +6,12 @@
 # The file it expects is version-locked to the crate version:
 #   .sherpa-onnx-libs/sherpa-onnx-v1.13.8-win-x64-static-MT-Release-lib.tar.bz2
 # If the sherpa-onnx version is bumped, the filename must change with it.
+#
+# VERSE_MODELS points a development build at this checkout's model directory.
+# Without it the application looks beside its own executable, which during
+# development is `target/debug/` — several levels from where the models are.
+# An installed build has no such variable and uses the adjacent directory,
+# which is the correct behaviour there. See ui-design.md §11.
 [env]
 SHERPA_ONNX_ARCHIVE_DIR = { value = ".sherpa-onnx-libs", relative = true }
+VERSE_MODELS = { value = "models", relative = true }

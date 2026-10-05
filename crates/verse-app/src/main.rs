@@ -1,3 +1,9 @@
+//! Verse desktop application — entry point.
+
+// A release build must not open a console window behind itself. Debug builds
+// keep it, because that is where panics and `eprintln!` land.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 fn main() {
-    println!("verse-app {} (GUI lands in P1b)", env!("CARGO_PKG_VERSION"));
+    verse_app::run();
 }
