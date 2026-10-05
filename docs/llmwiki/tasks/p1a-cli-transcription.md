@@ -35,11 +35,13 @@ What actually happened:
 
 **Bonus findings:** sherpa-onnx ships its own `vad`, `offline_punctuation` and `resampler` modules, so steps 6 and 8 need no extra libraries. `OfflineQwen3ASRModelConfig` also exists — see the changelog.
 
-## [ ] 4. Manually obtain Paraformer-large int8
+## [x] 4. Manually obtain Paraformer-large int8
 
-Fetch `csukuangfj/sherpa-onnx-paraformer-zh-2024-03-09` via hf-mirror, with `HF_HUB_DISABLE_XET=1`. Place it under the local model directory.
+Fetched `csukuangfj/sherpa-onnx-paraformer-zh-2024-03-09` from hf-mirror into `models/paraformer-zh/` (gitignored): `model.int8.onnx` (227,330,205 bytes, matching the server's Content-Length exactly), `tokens.txt`, and `0.wav` / `2-zh-en.wav` from the repository's own `test_wavs/`.
 
-**Verify:** files present, sizes match the listing API, SHA-256 recorded.
+hf-mirror 302-redirects large files to the Xet CDN (`cas-bridge.xethub.hf.co`), as the research warned. Contrary to that warning, the Xet path was fast and reliable here — 227 MB with no retries. Keep `HF_HUB_DISABLE_XET=1` as a fallback, not a default.
+
+**Verify:** transcribed both test files with `cargo run -p verse-asr --example transcribe_paraformer`. Both produced correct text; see the changelog. This is stronger than the planned "files present, sizes match" check — it proves the model actually runs.
 
 ## [ ] 5. Audio decoding
 

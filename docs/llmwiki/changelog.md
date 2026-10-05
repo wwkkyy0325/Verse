@@ -51,3 +51,18 @@ Two findings that change later steps:
 
 - **sherpa-onnx ships its own `vad`, `offline_punctuation` and `resampler` modules.** P1a steps 6 and 8 therefore need no additional libraries, and resampling may not need `rubato` either.
 - **`OfflineQwen3ASRModelConfig` exists in 1.13.8**, contradicting the earlier research note that Qwen3-ASR had only a community ONNX port and thus high integration risk. Having a config is not the same as having official converted weights, so no decision changes yet — but §5.6 of `design.md` needs revisiting once that is checked.
+
+## 2026-10-05 — P1a step 4 complete: offline Chinese transcription works
+
+First end-to-end proof that the stack produces Chinese text. Two files from the model repository's own `test_wavs/` were transcribed:
+
+- `0.wav` → 对我做了介绍啊那么我想说的是呢大家如果对我的研究感兴趣呢嗯
+- `2-zh-en.wav` → yesterday was 星期一 today is tuesday 明天是星期三
+
+Three things this settled:
+
+- **Chinese works, and so does code-switching.** The mixed file came back cleanly, which matters because English is the secondary language here and mixed speech is the realistic input.
+- **Punctuation is empirically required.** The output carries none. §5.4 already called the punctuation model non-optional; this is confirmation rather than prediction.
+- **The Xet CDN warning was too pessimistic.** hf-mirror does redirect large files to `cas-bridge.xethub.hf.co`, but the 227 MB download finished without a single retry.
+
+Added `crates/verse-asr/examples/transcribe_paraformer.rs` as a manual smoke check, kept out of the test suite because it depends on model files that are never committed.
