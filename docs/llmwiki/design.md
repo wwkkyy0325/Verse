@@ -45,7 +45,7 @@ Two delivery modes:
 
 ```
 verse-core     Domain model, traits, events, registry, router, export   [lib]
-verse-audio    decode (symphonia, P1) / capture (cpal, P2)              [lib]
+verse-audio    decode + convert (ffmpeg sidecar) / capture (P2)         [lib]
 verse-asr      Engine implementations — sherpa-onnx FFI lives here      [lib]
 verse-model    Model catalog + multi-source resumable downloader        [lib]
 verse-cli      Command-line entry point                                 [bin]
@@ -89,8 +89,9 @@ pub trait TextSink: Send {
 Phase 1:
 
 ```
-file ──▶[decode]──▶[VAD segment]──▶[parallel ASR]──▶[segments+timestamps]──▶ CLI/GUI, txt/srt
-      symphonia      Silero           N threads                              verse-core::export
+file ──▶[decode]──▶[VAD segment]──▶[parallel ASR]──▶[punctuate]──▶[segments]──▶ CLI/GUI, txt/srt
+      ffmpeg         Silero           N threads     CT-Transformer    +timestamps   verse-core::export
+      sidecar
 ```
 
 Phase 2:
@@ -158,6 +159,20 @@ enum Event {
 
 Progress and cancellation flow through the bus rather than return values, so a long transcription is observable and interruptible without the pipeline knowing who is listening.
 
+### 4.7 Audio I/O: the ffmpeg sidecar
+
+Every format decision collapses into one: use ffmpeg, and never link it.
+
+**Why ffmpeg at all.** "Any format in, any format out" is not reachable with a pure-Rust decoder. `symphonia` reads common audio formats but cannot encode, so the conversion half of the requirement is impossible with it alone. ffmpeg covers both halves and every container, video included.
+
+**Why a child process, not a library.** The no-leak constraint (§3, C2) is the second hard requirement in this project. Linking FFmpeg's C libraries is the largest FFI surface available and would contradict it outright. Running `ffmpeg` as a child and reading raw PCM from its stdout gives full coverage with *stronger* isolation than even a careful binding: a leak, crash, or memory blow-up inside ffmpeg cannot reach this process. Dropping the decoder kills the child.
+
+**The cost.** Verse now depends on an ffmpeg executable. Discovery order is `VERSE_FFMPEG` → `PATH` → a copy shipped beside the binary. Only the third satisfies "install and run", and it is a P1b task; P1a uses whatever the machine already has.
+
+That obligation is real rather than a footnote: requiring a separate ffmpeg install would break the zero-configuration goal (§3, C6) harder than any model download, because it is a system-level install rather than a file fetch.
+
+**Resampling happens in ffmpeg.** Decoding asks for 16 kHz mono directly (`-ar 16000 -ac 1`) so ffmpeg's proper resampler does the work. sherpa-onnx also ships a `LinearResampler`, but linear interpolation is a poor fit for 44.1 kHz → 16 kHz; letting ffmpeg handle it is both simpler and better.
+
 ## 5. Engine and model selection
 
 ### 5.1 Why not Whisper
@@ -208,11 +223,13 @@ The exact bundled model is selected in P1a step 4 — prefer a smaller offline C
 
 Cross-benchmark CER numbers are not strictly comparable — different test sets (AISHELL, WenetSpeech, FLEURS, real-clip micro-CER). Do not rank models from the table above on CER alone.
 
-### 5.4 Open item: Chinese punctuation
+### 5.4 Punctuation (resolved)
 
-Paraformer outputs unpunctuated text. Readable SRT needs punctuation, which sherpa-onnx provides as a **separate model** (a CT-Transformer punct model). SenseVoice handles punctuation internally, which is a real advantage despite the license question.
+Paraformer outputs unpunctuated text. The first real transcription confirmed how unusable that is: `对我做了介绍啊那么我想说的是呢大家如果对我的研究感兴趣呢嗯`.
 
-Selecting and wiring the punctuation model is a P1a task. It is not optional — unpunctuated subtitles are not shippable.
+The model is `csukuangfj/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12` (CT-Transformer), loaded through sherpa-onnx's `OfflinePunctuation`. It needs no tokens file — the vocabulary is embedded in the ONNX graph.
+
+**It costs 294 MB — more than the recognition model itself.** That is real weight against the lightweight goal and belongs in the size budget. SenseVoice punctuates internally and would have avoided it, but its unresolved license keeps it out of the default path.
 
 ### 5.5 Phase 2: streaming and translation
 
@@ -409,5 +426,5 @@ P1a is where the risk lives: the model fetcher under real Chinese network condit
 ### Open questions
 
 1. ~~Model bundled or fetched on first launch?~~ **Decided:** one lightweight model ships inside the installer; heavier models are opt-in downloads. See §5.3.
-2. Exact punctuation model repository for sherpa-onnx — confirm during P1a.
-3. Windows audio/video container support in `symphonia` (some codecs, notably certain AAC and video containers, may need fallbacks). Confirm during P1a.
+2. ~~Exact punctuation model repository?~~ **Decided:** `csukuangfj/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12`. See §5.4.
+3. ~~Windows audio/video container support in `symphonia`?~~ **Moot:** the decoder is the ffmpeg sidecar, which covers every container ffmpeg does — including video. See §4.7.

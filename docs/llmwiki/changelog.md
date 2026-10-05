@@ -66,3 +66,15 @@ Three things this settled:
 - **The Xet CDN warning was too pessimistic.** hf-mirror does redirect large files to `cas-bridge.xethub.hf.co`, but the 227 MB download finished without a single retry.
 
 Added `crates/verse-asr/examples/transcribe_paraformer.rs` as a manual smoke check, kept out of the test suite because it depends on model files that are never committed.
+
+## 2026-10-05 — P1a steps 5 and 8 complete: decoding, conversion, punctuation
+
+**Audio I/O switched to an ffmpeg sidecar**, replacing the symphonia plan. The requirement for "any format in, any format out" ruled symphonia out: it reads common audio formats but cannot encode at all, so the conversion half is unreachable with it. ffmpeg covers both directions and every container including video.
+
+Integration is a **child process, not a linked library**. Linking FFmpeg's C libraries would contradict the no-leak constraint outright, and process isolation is stronger than even a careful binding — ffmpeg's leaks and crashes cannot reach this process. `verse-audio::decode` pulls 0.1 s chunks from ffmpeg's stdout as an `AudioSource`, so memory stays bounded by chunk size rather than file length. `verse-audio::convert` handles arbitrary transcoding, with a raw-argument escape hatch for options not modelled.
+
+New obligation: Verse now depends on an ffmpeg executable. Discovery is `VERSE_FFMPEG` → `PATH` → bundled (P1b). Only the bundled copy satisfies the zero-configuration goal, and it does not exist yet — this is the largest outstanding gap against "install and run", larger than any model download, because it is a system-level install rather than a file fetch.
+
+**Punctuation done, ahead of VAD**, because the first transcription made the need obvious. `verse_asr::Punctuator` wraps sherpa-onnx's CT-Transformer model; no tokens file is needed because the vocabulary is embedded in the ONNX graph.
+
+**The punctuation model is 294 MB — larger than the recognizer's 227 MB.** Combined with the streaming model Phase 2 will need, the size budget is becoming a genuine problem for the lightweight goal. Nothing is decided yet, but it should not stay unexamined.

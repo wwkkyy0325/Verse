@@ -43,11 +43,13 @@ hf-mirror 302-redirects large files to the Xet CDN (`cas-bridge.xethub.hf.co`), 
 
 **Verify:** transcribed both test files with `cargo run -p verse-asr --example transcribe_paraformer`. Both produced correct text; see the changelog. This is stronger than the planned "files present, sizes match" check — it proves the model actually runs.
 
-## [ ] 5. Audio decoding
+## [x] 5. Audio decoding
 
-`verse-audio::decode` using symphonia. Decode to mono 16 kHz PCM.
+`verse-audio` decodes through the **ffmpeg sidecar** rather than symphonia — see `design.md` §4.7 for why. `FfmpegDecoder` implements `AudioSource`, pulling 0.1 s chunks from ffmpeg's stdout, so memory stays bounded by chunk size rather than file length. Dropping the decoder kills the child.
 
-**Verify:** a known WAV decodes to the expected sample count and duration. Test an MP3 and an M4A too — container coverage is an open question (`design.md` §10).
+`verse-audio::convert` was added at the same time: a `TranscodeRequest` covering codec, sample rate, channels and bitrate, plus a raw-argument escape hatch so "any format to any format" stays reachable.
+
+**Verify:** four integration tests, all passing. Decoding a 2 s stereo 44.1 kHz tone to the 16 kHz mono target produces the expected frame count within a 0.1 s tolerance — so resampling and downmixing genuinely happen. Chunks come back bounded and in order. A WAV→MP3 conversion produces a non-empty file that decodes back. A missing input fails before ffmpeg is even invoked, with the path in the message. ✅
 
 ## [ ] 6. VAD segmentation
 
@@ -61,11 +63,13 @@ Implement the trait from `design.md` §4.2 plus the offline Paraformer implement
 
 **Verify:** unit test transcribes a short Chinese clip and produces the expected text with monotonic timestamps.
 
-## [ ] 8. Punctuation
+## [x] 8. Punctuation
 
-Wire the sherpa-onnx punctuation model (repository to be confirmed).
+Done ahead of VAD because the first transcription made the need obvious. `verse_asr::Punctuator` wraps sherpa-onnx's `OfflinePunctuation` with the CT-Transformer model from `design.md` §5.4. No tokens file needed — the vocabulary is in the ONNX graph.
 
-**Verify:** output contains sentence-ending punctuation. Unpunctuated output is not shippable.
+**Verify:** `对我做了介绍啊那么我想说的是呢大家如果对我的研究感兴趣呢嗯` becomes `对我做了介绍啊，那么我想说的是呢，大家如果对我的研究感兴趣呢嗯。` ✅
+
+**Cost noted:** the model is 294 MB, larger than the recognizer. It belongs in the size budget.
 
 ## [ ] 9. Export
 
