@@ -1,57 +1,48 @@
 //! Verse command line.
 //!
-//! Phase 1 entry point: transcribe a file, offline.
+//! Phase 1 entry point: fetch models, transcribe files, offline.
 //!
 //! Argument parsing is hand-rolled. The surface is small and stable, and the
 //! project's whole point is a small footprint — pulling in an argument parser
-//! for four flags would be out of proportion.
+//! for a handful of flags would be out of proportion.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use verse_asr::{register_builtin_engines, Punctuator};
 use verse_audio::{FfmpegDecoder, SileroVad};
 use verse_core::{
-    AsrEngine, AudioChunk, AudioFormat, AudioSource, EngineConfig, ExportFormat, Registry, Segment,
-    SegmentId, Segmenter, TextChain, Transcript,
+    AsrEngine, AudioChunk, AudioFormat, AudioSource, CancelToken, EngineConfig, ExportFormat,
+    HardwareProfile, Registry, Segment, SegmentId, Segmenter, TextChain, Transcript,
 };
+use verse_model::{Catalog, DownloadState, Downloader};
 
 const DEFAULT_ENGINE: &str = "sensevoice";
-const DEFAULT_VAD: &str = "models/vad/silero_vad.onnx";
-const DEFAULT_MODEL_ROOT: &str = "models";
+const DEFAULT_MODELS_DIR: &str = "models";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    match args.first().map(String::as_str) {
-        Some("transcribe") => match Options::parse(&args[1..]) {
-            Ok(options) => match run(&options) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    ExitCode::FAILURE
-                }
-            },
-            Err(message) => {
-                eprintln!("error: {message}");
-                eprintln!();
-                print_transcribe_usage();
-                ExitCode::from(2)
-            }
-        },
+    let result = match args.first().map(String::as_str) {
+        Some("transcribe") => TranscribeOptions::parse(&args[1..])
+            .and_then(|options| transcribe(&options).map_err(|e| e.to_string())),
+        Some("model") => model_command(&args[1..]),
         Some("--version") | Some("-V") => {
             println!("verse {}", env!("CARGO_PKG_VERSION"));
-            ExitCode::SUCCESS
+            Ok(())
         }
         Some("--help") | Some("-h") | None => {
             print_usage();
-            ExitCode::SUCCESS
+            Ok(())
         }
-        Some(other) => {
-            eprintln!("error: unknown command '{other}'");
-            eprintln!();
-            print_usage();
-            ExitCode::from(2)
+        Some(other) => Err(format!("unknown command '{other}'\n\nrun 'verse --help'")),
+    };
+
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(message) => {
+            eprintln!("error: {message}");
+            ExitCode::FAILURE
         }
     }
 }
@@ -62,67 +53,64 @@ fn print_usage() {
     println!("usage: verse <command> [options]");
     println!();
     println!("commands:");
-    println!("  transcribe <file>   Transcribe an audio or video file");
+    println!("  transcribe <file>     Transcribe an audio or video file");
+    println!("  model list            Show known models and whether they are present");
+    println!("  model fetch <id>      Download a model");
     println!();
-    println!("  --help, -h          Show this message");
-    println!("  --version, -V       Show the version");
+    println!("  --help, -h            Show this message");
+    println!("  --version, -V         Show the version");
 }
 
-fn print_transcribe_usage() {
-    println!("usage: verse transcribe <file> [options]");
-    println!();
-    println!("options:");
-    println!("  -o, --output <file>     Output file (default: input name with .srt)");
-    println!("      --format <srt|txt>   Output format (default: from the file extension)");
-    println!("      --engine <id>        Recognition engine (default: {DEFAULT_ENGINE})");
-    println!("      --model-dir <dir>    Model directory (default: {DEFAULT_MODEL_ROOT}/<engine>)");
-    println!("      --punct <file>       Punctuation model, if the engine needs one");
-    println!("      --vad <file>         VAD model (default: {DEFAULT_VAD})");
-}
+// ---------------------------------------------------------------- transcribe
 
-struct Options {
+struct TranscribeOptions {
     input: PathBuf,
     output: Option<PathBuf>,
     format: Option<ExportFormat>,
     engine: String,
-    model_dir: Option<PathBuf>,
-    punct: Option<PathBuf>,
-    vad: PathBuf,
+    models_dir: PathBuf,
+    punctuation: bool,
+    vad: Option<PathBuf>,
 }
 
-impl Options {
+impl TranscribeOptions {
     fn parse(args: &[String]) -> Result<Self, String> {
+        let mut options = Self {
+            input: PathBuf::new(),
+            output: None,
+            format: None,
+            engine: DEFAULT_ENGINE.to_string(),
+            models_dir: PathBuf::from(DEFAULT_MODELS_DIR),
+            punctuation: false,
+            vad: None,
+        };
         let mut input: Option<PathBuf> = None;
-        let mut output = None;
-        let mut format = None;
-        let mut engine = DEFAULT_ENGINE.to_string();
-        let mut model_dir = None;
-        let mut punct = None;
-        let mut vad = PathBuf::from(DEFAULT_VAD);
 
         let mut i = 0;
         while i < args.len() {
             let arg = args[i].clone();
-
             match arg.as_str() {
                 "-o" | "--output" => {
-                    output = Some(PathBuf::from(take_value(args, &mut i, "--output")?))
+                    options.output = Some(PathBuf::from(take_value(args, &mut i, "--output")?))
                 }
                 "--format" => {
                     let raw = take_value(args, &mut i, "--format")?;
-                    format = Some(
+                    options.format = Some(
                         ExportFormat::from_extension(&raw)
                             .ok_or_else(|| format!("unknown format '{raw}'"))?,
                     );
                 }
-                "--engine" => engine = take_value(args, &mut i, "--engine")?,
-                "--model-dir" => {
-                    model_dir = Some(PathBuf::from(take_value(args, &mut i, "--model-dir")?))
+                "--engine" => options.engine = take_value(args, &mut i, "--engine")?,
+                "--models" => {
+                    options.models_dir = PathBuf::from(take_value(args, &mut i, "--models")?)
                 }
-                "--punct" => punct = Some(PathBuf::from(take_value(args, &mut i, "--punct")?)),
-                "--vad" => vad = PathBuf::from(take_value(args, &mut i, "--vad")?),
+                "--vad" => options.vad = Some(PathBuf::from(take_value(args, &mut i, "--vad")?)),
+                "--punctuation" | "--punct" => options.punctuation = true,
                 other if other.starts_with('-') => {
-                    return Err(format!("unknown option '{other}'"));
+                    return Err(format!(
+                        "unknown option '{other}'\n\n{}",
+                        transcribe_usage()
+                    ));
                 }
                 other => {
                     if input.is_some() {
@@ -134,18 +122,12 @@ impl Options {
             i += 1;
         }
 
-        Ok(Self {
-            input: input.ok_or("no input file given")?,
-            output,
-            format,
-            engine,
-            model_dir,
-            punct,
-            vad,
-        })
+        options.input =
+            input.ok_or_else(|| format!("no input file given\n\n{}", transcribe_usage()))?;
+        Ok(options)
     }
 
-    /// Where this run's output goes.
+    /// Where this run's output goes, and in what format.
     fn resolve_output(&self) -> (PathBuf, ExportFormat) {
         let format = self.format.or_else(|| {
             self.output
@@ -166,32 +148,51 @@ impl Options {
     }
 }
 
-/// Consume the value that follows a flag.
-fn take_value(args: &[String], i: &mut usize, name: &str) -> Result<String, String> {
-    *i += 1;
-    args.get(*i)
-        .cloned()
-        .ok_or_else(|| format!("{name} needs a value"))
+fn transcribe_usage() -> String {
+    let mut s = String::from("usage: verse transcribe <file> [options]\n\noptions:\n");
+    s.push_str("  -o, --output <file>     Output file (default: input name with .srt)\n");
+    s.push_str("      --format <srt|txt>  Output format (default: from the file extension)\n");
+    s.push_str(&format!(
+        "      --engine <id>       Engine (default: {DEFAULT_ENGINE})\n"
+    ));
+    s.push_str(&format!(
+        "      --models <dir>      Model root (default: {DEFAULT_MODELS_DIR})\n"
+    ));
+    s.push_str("      --punctuation       Add punctuation (needed by engines without it)\n");
+    s.push_str(
+        "      --vad <file>        VAD model (default: <models>/silero-vad/silero_vad.onnx)",
+    );
+    s
 }
 
-fn run(options: &Options) -> Result<(), Box<dyn std::error::Error>> {
+fn transcribe(options: &TranscribeOptions) -> Result<(), Box<dyn std::error::Error>> {
+    // Reported once, and only when something is being worked around.
+    let hardware = HardwareProfile::probe();
+    if let Some(notice) = hardware.tier().notice() {
+        eprintln!("{notice}");
+    }
+
+    let model_dir = options.models_dir.join(&options.engine);
+
     let mut registry = Registry::new();
     register_builtin_engines(&mut registry);
-
     let mut engine = registry.create_engine(
         &options.engine,
         &EngineConfig {
-            model_dir: options
-                .model_dir
-                .clone()
-                .unwrap_or_else(|| PathBuf::from(DEFAULT_MODEL_ROOT).join(&options.engine)),
-            threads: engine_threads(),
+            model_dir,
+            threads: hardware.engine_threads(),
         },
     )?;
 
-    let mut vad = SileroVad::load(&options.vad, AudioFormat::TARGET)?;
-    let mut source = FfmpegDecoder::open(&options.input, AudioFormat::TARGET)?;
+    let vad_model = options.vad.clone().unwrap_or_else(|| {
+        options
+            .models_dir
+            .join("silero-vad")
+            .join("silero_vad.onnx")
+    });
+    let mut vad = SileroVad::load(&vad_model, AudioFormat::TARGET)?;
 
+    let mut source = FfmpegDecoder::open(&options.input, AudioFormat::TARGET)?;
     let mut transcript = Transcript::default();
     let mut spans = 0usize;
 
@@ -201,9 +202,10 @@ fn run(options: &Options) -> Result<(), Box<dyn std::error::Error>> {
     }
     spans += recognize(vad.finish(), engine.as_mut(), &mut transcript)?;
 
-    if let Some(model) = &options.punct {
+    if options.punctuation {
+        let model = options.models_dir.join("punctuation").join("model.onnx");
         let mut chain = TextChain::new();
-        chain.push(Box::new(Punctuator::load(model)?));
+        chain.push(Box::new(Punctuator::load(&model)?));
         chain.run_transcript(&mut transcript);
     }
 
@@ -211,12 +213,10 @@ fn run(options: &Options) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::write(&path, format.render(&transcript))?;
 
     eprintln!(
-        "{} spans -> {} segments -> {}",
-        spans,
+        "{spans} spans -> {} segments -> {}",
         transcript.segments.len(),
         path.display()
     );
-
     Ok(())
 }
 
@@ -247,9 +247,133 @@ fn recognize(
     Ok(count)
 }
 
-/// Leave one core for the UI and whatever else the machine is doing.
-fn engine_threads() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get().saturating_sub(1).max(1))
-        .unwrap_or(1)
+// --------------------------------------------------------------------- model
+
+fn model_command(args: &[String]) -> Result<(), String> {
+    match args.first().map(String::as_str) {
+        Some("list") => model_list(&models_dir_from(args)),
+        Some("fetch") => {
+            let id = args
+                .get(1)
+                .filter(|a| !a.starts_with('-'))
+                .ok_or("usage: verse model fetch <id> [--models <dir>]")?;
+            model_fetch(id, &models_dir_from(args))
+        }
+        _ => Err("usage: verse model list | verse model fetch <id>".to_string()),
+    }
+}
+
+/// Pull `--models <dir>` out of a model subcommand's arguments.
+fn models_dir_from(args: &[String]) -> PathBuf {
+    args.iter()
+        .position(|a| a == "--models")
+        .and_then(|i| args.get(i + 1))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_MODELS_DIR))
+}
+
+/// Where a catalogue override would be looked for.
+fn catalog_path(models_dir: &Path) -> PathBuf {
+    models_dir.join("catalog.json")
+}
+
+fn load_catalog(models_dir: &Path) -> Result<Catalog, String> {
+    Catalog::load_or_embedded(&catalog_path(models_dir)).map_err(|e| e.message().to_string())
+}
+
+fn model_list(models_dir: &Path) -> Result<(), String> {
+    let catalog = load_catalog(models_dir)?;
+
+    println!("models directory: {}", models_dir.display());
+    println!("catalogue: {}", catalog_path(models_dir).display());
+    println!("           (edit it to change mirrors; falls back to the built-in copy)");
+    println!();
+
+    for spec in &catalog.models {
+        let mark = if Downloader::is_present(spec, models_dir) {
+            "present"
+        } else {
+            "missing"
+        };
+        println!("  {:<12} {:<8} {}", spec.id, mark, spec.display_name);
+
+        if !Downloader::is_present(spec, models_dir) {
+            for mirror in &spec.mirrors {
+                println!("      via {}", mirror.name);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn model_fetch(id: &str, models_dir: &Path) -> Result<(), String> {
+    let catalog = load_catalog(models_dir)?;
+
+    let spec = catalog
+        .find(id)
+        .ok_or_else(|| format!("unknown model '{id}'; run 'verse model list'"))?;
+
+    if Downloader::is_present(spec, models_dir) {
+        println!("{} is already present", spec.display_name);
+        return Ok(());
+    }
+
+    println!("fetching {}", spec.display_name);
+
+    let downloader = Downloader::new();
+    // No cancellation source yet; a later UI will drive this.
+    let cancel = CancelToken::new();
+
+    let state = downloader
+        .fetch(spec, models_dir, report_progress, &cancel)
+        .map_err(|e| e.message().to_string())?;
+
+    match state {
+        DownloadState::Ready => {
+            let dir = Downloader::directory_for(spec, models_dir);
+            println!("ready: {}", dir.display());
+            Ok(())
+        }
+        DownloadState::Idle => {
+            println!("cancelled");
+            Ok(())
+        }
+        DownloadState::Failed { reason } => Err(reason),
+        other => Err(format!("unexpected end state: {other:?}")),
+    }
+}
+
+/// Overwrite one line as the download advances.
+fn report_progress(state: &DownloadState) {
+    const CLEAR: &str = "\r                                        ";
+    const MB: u64 = 1_000_000;
+
+    match state {
+        DownloadState::Fetching {
+            mirror,
+            file,
+            received,
+            total,
+        } => match total {
+            Some(total) if *total > 0 => eprint!(
+                "{CLEAR}\r  {file} from {mirror}: {} / {} MB",
+                received / MB,
+                total / MB
+            ),
+            _ => eprint!("{CLEAR}\r  {file} from {mirror}: {} MB", received / MB),
+        },
+        DownloadState::Verifying => eprint!("{CLEAR}\r  verifying"),
+        DownloadState::Ready => eprintln!("{CLEAR}\r  done"),
+        DownloadState::Failed { reason } => eprintln!("{CLEAR}\r  failed: {reason}"),
+        DownloadState::Idle => {}
+    }
+}
+
+/// Consume the value that follows a flag.
+fn take_value(args: &[String], i: &mut usize, name: &str) -> Result<String, String> {
+    *i += 1;
+    args.get(*i)
+        .cloned()
+        .ok_or_else(|| format!("{name} needs a value"))
 }
