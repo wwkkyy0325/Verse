@@ -1,0 +1,19 @@
+[package]
+name = "verse-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Scores the recognizer against a labelled dataset"
+
+# A development tool. It is in the workspace so it builds against the same
+# dependency versions as everything else, and deliberately not part of the
+# shipped product.
+[[bin]]
+name = "verse-bench"
+path = "src/main.rs"
+
+[dependencies]
+verse-core.workspace = true
+verse-audio.workspace = true
+verse-pipeline.workspace = true

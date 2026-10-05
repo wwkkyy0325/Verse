@@ -354,3 +354,159 @@ use.
 screen and selectable, but there is no way to write it to a file yet — which
 is the `verse-core::export` code that already exists and is tested, waiting
 for a button.
+
+## 2026-10-06 — Measured, and the measurement changed the picture
+
+Everything before this was reasoning about the recogniser. This is the first
+time it has been scored against labelled audio, and the first three findings
+each contradict something that had been assumed.
+
+**The harness.** `crates/verse-bench` scores a manifest of
+`id / wav / reference` and reports a character error rate plus the worst
+utterances, because a number alone is not a diagnosis. `tools/asr-eval/`
+unpacks the datasets. The **pipeline was extracted into `verse-pipeline`**
+first — it had already been copied once between the CLI and the app, and a
+benchmark scoring a third copy would have been measuring a program nobody
+ships. The recogniser is also now loaded once per run rather than per file;
+at 228 MB a load, scoring thousands of utterances any other way is mostly a
+disk test.
+
+### Finding 1: the first number was wrong because of what it measured
+
+AISHELL-1 test, 2307 utterances, **CER 8.44%**. Then looking at the worst
+cases rather than the mean:
+
+```
+ref  十七万套        got  17万套
+ref  百分之四        got  4%
+ref  零三年          got  03年
+```
+
+Reference transcripts spell numbers out; the recogniser normalises them. Both
+are correct — they are written differently. **1153 of the 2824 "errors", 41%,
+were formatting.** With ITN off the same run scores **5.00%**.
+
+That number is now a knob rather than a hidden constant:
+`EngineConfig::inverse_text_normalization`. On in the product, because that is
+what a person would write; off in the benchmark, because the yardstick spells
+numbers out.
+
+### Finding 2: punctuation had to be scored separately, and is worse
+
+The character rate strips punctuation, which is standard practice and also
+hides the thing this project chose its engine for. SenseVoice is the default
+**because it punctuates**; scoring it off a character rate makes that decision
+invisible.
+
+Speechio-Formal, conversation subset, 898 utterances, punctuated references.
+Punctuation is scored the way the restoration literature does — precision,
+recall and F1 **per mark**, aligned by character so that a mark is judged by
+where it lands, not merely by appearing:
+
+| mark | precision | recall | F1 |
+|---|---|---|---|
+| 。 | 80.5% | 87.4% | 83.8% |
+| ， | 86.4% | **60.6%** | **71.3%** |
+| ？ | 91.7% | 81.6% | 86.4% |
+| ！ | 0.0% | 0.0% | 0.0% |
+| **overall** | **83.6%** | **75.2%** | **79.2%** |
+
+Two things stand out. **Commas are placed correctly when placed at all but
+missed 40% of the time** — 255 of 648. Full stops and question marks are
+fine. And **exclamation marks are never produced at all**; only four occur in
+the sample, but the direction is unambiguous.
+
+### Finding 3: whole utterances were being discarded before recognition
+
+The worst list for the conversation set was not full of wrong transcripts. It
+was full of **empty ones**:
+
+```
+[000242] ref 逛集市喽，去逛集市喽。妈妈，你快点儿。
+         got (empty)
+```
+
+17 of 898, just under 2%. The audio is intact — checked with `ffprobe` and
+`volumedetect`: 2.4 to 5.0 seconds at −7 to −11 dB, normal speech level.
+`verse transcribe` on the same file reports **"0 spans"**: the voice detector
+found no speech in it at all.
+
+This dataset is conversation; AISHELL is read news. **The failure mode only
+appears on the material that resembles real use**, which is exactly what the
+first dataset could not show.
+
+The threshold was hardcoded. It is now `vad_threshold`, plumbed through the
+pipeline and settable with `--vad-threshold`, and the first sweep says the
+default was too high:
+
+| threshold | CER (200 utterances) |
+|---|---|
+| 0.30 (was) | 8.58% |
+| 0.10 | 6.75% |
+| 0.05 | 6.00% |
+| 0.03 | 5.93% |
+
+**A 31% reduction in error rate from one constant**, and the default had been
+chosen by reasoning rather than measurement.
+
+### The default threshold was wrong, and is now 0.05
+
+The sweep completed across both datasets, 200 utterances each. It settles the
+question rather than pointing at it:
+
+| threshold | read news | conversation |
+|---|---|---|
+| 0.30 (was) | 2.28% | 8.58% |
+| 0.10 | 2.07% | 6.75% |
+| 0.05 | 2.11% | 6.00% |
+| 0.02 | 2.14% | 5.76% |
+
+On clean read speech the threshold hardly matters. On conversation it is worth
+a third of the error rate. **0.05 is the new default** — not the 0.02 that
+scores marginally better, because sherpa-onnx refuses anything at or below
+0.01 and the margin is worth more than two hundredths of a point.
+
+Full conversation set, 898 utterances, before and after:
+
+| | 0.30 | 0.05 |
+|---|---|---|
+| CER | 9.07% | **6.84%** |
+| exact matches | 47.4% | **51.7%** |
+| p90 | 28.6% | **20.0%** |
+| **p99** | **100%** | **57.1%** |
+| utterances with no output | 17 | **1** |
+| punctuation overall F1 | 79.2% | **83.0%** |
+| comma F1 | 71.3% | **76.7%** |
+
+Punctuation improves as a side effect, for the obvious reason: a sentence that
+was never transcribed has no punctuation to score.
+
+A related trap fixed on the way: sherpa-onnx rejects a threshold at or below
+0.01, but reports it as **"failed to load VAD model"** — sending anyone who
+reads that message to inspect a model that is perfectly fine. `verse-audio`
+now range-checks first and names the parameter.
+
+### What is left
+
+The worst remaining cases are mostly **partial** truncations rather than
+missing utterances — half a sentence survives and the rest is gone:
+
+```
+ref  逛集市喽，去逛集市喽。妈妈，你快点儿。
+got  逛集市了去逛集市了。
+ref  妈妈，妈妈，快来，别淋湿啦！
+got  别淋湿啦。
+```
+
+That is a boundary decision, not a lost utterance: `min_silence_duration` is
+0.25 s, and conversation is full of pauses shorter than that which still split
+a sentence. Raising it would keep sentences whole at the cost of coarser
+subtitles, which is a trade to measure rather than assume — the same way this
+one was.
+
+Two smaller clusters: rare proper nouns heard as common words (萝卜头儿 →
+老八头, 萝卜头儿 → 龙头), and counting sequences (一、二、三…七 → 567). The
+second is partly ITN again.
+
+**Also outstanding:** the AISHELL tail-truncation seen earlier (供求关系 →
+供求, 消费环境 → 消费) is the same boundary problem in a different dataset.

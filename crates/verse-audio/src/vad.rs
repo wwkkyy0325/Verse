@@ -38,11 +38,27 @@ const PAD_SECONDS: f32 = 0.4;
 
 /// Where the detector decides a frame is speech.
 ///
-/// Below the usual 0.5 on purpose: being slow to start a span costs text,
-/// being slow to end one only costs a little silence. Exposed as a constant
-/// rather than buried because it is the first thing to reach for when whole
-/// utterances come back empty — see [`SileroVad::load_with`].
-pub const DEFAULT_THRESHOLD: f32 = 0.3;
+/// Far below the usual 0.5, and measured rather than reasoned. On 200
+/// utterances of each of two datasets, character error rate:
+///
+/// ```text
+/// threshold   read news   conversation
+///   0.30         2.28%        8.58%
+///   0.10         2.07%        6.75%
+///   0.05         2.11%        6.00%
+///   0.02         2.14%        5.76%
+/// ```
+///
+/// On clean read speech the threshold hardly matters. On conversation it is
+/// worth a third of the error rate, because speech that is quiet, overlapped
+/// or competing with music never reaches 0.3 and the whole utterance is
+/// discarded before the recogniser sees it — 17 of 898 utterances came back
+/// empty at 0.3 against 1 at 0.05.
+///
+/// 0.05 rather than the 0.02 that scores marginally better, because
+/// sherpa-onnx refuses anything at or below 0.01 and the margin is worth
+/// more than two hundredths of a point.
+pub const DEFAULT_THRESHOLD: f32 = 0.05;
 
 /// Silence long enough to end a span.
 const MIN_SILENCE_SECONDS: f32 = 0.25;
