@@ -8,9 +8,53 @@
 //! Implementations land in P1a step 7. The traits are `AudioSource`,
 //! `AsrEngine` and `TextSink` in `verse_core::traits`.
 
+pub mod engine;
 pub mod punctuator;
 
+use std::sync::Arc;
+
+pub use engine::{Language, OfflineEngine};
 pub use punctuator::Punctuator;
+use verse_core::{EngineDescriptor, Registry};
+
+/// Register the engines this crate provides.
+///
+/// A model directory is expected to follow the layout in `design.md` §6:
+/// `model.int8.onnx` plus `tokens.txt`.
+///
+/// Adding an engine means adding a descriptor here — nothing in `verse-core`,
+/// the pipelines, or the UI needs to change. That is the point of the registry.
+pub fn register_builtin_engines(registry: &mut Registry) {
+    registry.register_engine(EngineDescriptor {
+        id: "paraformer",
+        display_name: "Paraformer-large (Chinese, English)",
+        streaming: false,
+        factory: Arc::new(|cfg| {
+            let model = cfg.model_dir.join("model.int8.onnx");
+            let tokens = cfg.model_dir.join("tokens.txt");
+            let engine = OfflineEngine::paraformer(&model, &tokens, cfg.threads)?;
+            Ok(Box::new(engine) as Box<dyn verse_core::AsrEngine>)
+        }),
+    });
+
+    registry.register_engine(EngineDescriptor {
+        id: "sensevoice",
+        display_name: "SenseVoice-Small (zh, en, yue, ja, ko)",
+        streaming: false,
+        factory: Arc::new(|cfg| {
+            let model = cfg.model_dir.join("model.int8.onnx");
+            let tokens = cfg.model_dir.join("tokens.txt");
+            let engine = OfflineEngine::sensevoice(
+                &model,
+                &tokens,
+                cfg.threads,
+                Language::Auto,
+                true,
+            )?;
+            Ok(Box::new(engine) as Box<dyn verse_core::AsrEngine>)
+        }),
+    });
+}
 
 #[cfg(test)]
 mod tests {

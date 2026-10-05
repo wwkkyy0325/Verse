@@ -1,14 +1,16 @@
 //! Punctuation restoration.
 //!
-//! Recognition models emit bare text — `对我做了介绍啊那么我想说的是呢` — and
-//! subtitles need sentences. Punctuation is a separate model because the two
-//! tasks are trained separately; `design.md` §5.4 called this non-optional and
-//! the first transcription confirmed it.
+//! Paraformer emits bare text — `对我做了介绍啊那么我想说的是呢` — which is
+//! unusable as subtitles. This stage restores sentences.
+//!
+//! SenseVoice punctuates internally, so it needs no stage here. That is what
+//! makes this optional rather than mandatory: `design.md` §5.4 called it
+//! non-optional at a time when Paraformer was the only engine available.
 
 use std::path::Path;
 
 use sherpa_onnx::{OfflinePunctuation, OfflinePunctuationConfig, OfflinePunctuationModelConfig};
-use verse_core::{Error, ErrorKind, Result};
+use verse_core::{Error, ErrorKind, Result, TextProcessor};
 
 /// Restores punctuation to unpunctuated text.
 pub struct Punctuator {
@@ -60,5 +62,18 @@ impl Punctuator {
             .add_punctuation(text)
             .filter(|punctuated| !punctuated.trim().is_empty())
             .unwrap_or_else(|| text.to_string())
+    }
+}
+
+impl TextProcessor for Punctuator {
+    fn name(&self) -> &'static str {
+        "punctuator"
+    }
+
+    /// Satisfies the [`TextProcessor`] contract by construction:
+    /// [`punctuate`](Punctuator::punctuate) already returns the input
+    /// unchanged when the model produces nothing.
+    fn process(&self, input: &str) -> String {
+        self.punctuate(input)
     }
 }
