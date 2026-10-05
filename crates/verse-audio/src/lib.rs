@@ -1,8 +1,17 @@
-//! Audio decoding (Phase 1) and capture (Phase 2).
+//! Audio decoding and conversion, backed by the ffmpeg sidecar.
 //!
-//! Empty until P1a step 5 adds `decode` (symphonia → 16 kHz mono PCM), and
-//! P2a adds `capture` (cpal plus per-platform loopback). The crate exists now
-//! so the workspace layout is settled before implementation starts.
+//! ffmpeg is invoked as a child process, never linked. That keeps the widest
+//! possible format coverage (`design.md` §4.1) without adding FFI to a project
+//! whose constraints rule it out (`design.md` §3, C2).
 //!
-//! `capture` will sit behind a feature flag so Phase 1 builds do not pull in
-//! cpal.
+//! Phase 1 uses [`decode`] and [`convert`]. Phase 2 adds a `capture` module
+//! (cpal plus per-platform loopback) behind a feature flag, so Phase 1 builds
+//! do not pull in a device layer.
+
+pub mod convert;
+pub mod decode;
+pub mod ffmpeg;
+
+pub use convert::{transcode, TranscodeRequest};
+pub use decode::FfmpegDecoder;
+pub use ffmpeg::{is_available as ffmpeg_available, locate as locate_ffmpeg, FFMPEG_ENV};
