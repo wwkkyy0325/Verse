@@ -4,3 +4,7 @@
 
 # Downloaded model weights are external files, never committed.
 /models
+
+# Prebuilt sherpa-onnx native archive, fetched out-of-band (design.md §7.2).
+# Large binary, regenerable; not committed. See .cargo/config.toml.
+.sherpa-onnx-libs/

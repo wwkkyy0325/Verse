@@ -334,6 +334,8 @@ Both directory variables are registered as `rerun-if-env-changed`. `ALL_PROXY` i
 
 Archive filenames are version-locked to the crate version (e.g. `sherpa-onnx-v{version}-win-x64-static-MT-Release-lib.tar.bz2`). A version bump changes the filename that must be pre-staged.
 
+**As built:** `SHERPA_ONNX_ARCHIVE_DIR` is set from the repository's `.cargo/config.toml` through cargo's `[env]` section rather than a shell export, so command-line and IDE builds both resolve it. The archive sits in `.sherpa-onnx-libs/`, which is gitignored — `cargo clean` does not discard it, and it is never committed. The archive for Windows x64 at version 1.13.8 is 117 MB.
+
 ### 7.3 Truly offline builds
 
 `cargo vendor` captures crate sources only. It does **not** capture the build script's native archive download. A fully offline build requires **both**: vendored crates *and* a pre-staged archive via `SHERPA_ONNX_ARCHIVE_DIR`.

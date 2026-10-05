@@ -1,0 +1,10 @@
+# sherpa-onnx-sys downloads a prebuilt static library archive at build time.
+# Its URL is hardcoded to GitHub Releases with no override, and GitHub is not
+# reachable from mainland China, so the archive is fetched out-of-band and
+# pointed to here instead. See docs/llmwiki/design.md §7.2.
+#
+# The file it expects is version-locked to the crate version:
+#   .sherpa-onnx-libs/sherpa-onnx-v1.13.8-win-x64-static-MT-Release-lib.tar.bz2
+# If the sherpa-onnx version is bumped, the filename must change with it.
+[env]
+SHERPA_ONNX_ARCHIVE_DIR = { value = ".sherpa-onnx-libs", relative = true }

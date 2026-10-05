@@ -38,3 +38,16 @@ Dropped `crossbeam-channel` in favour of `std::sync::mpsc`. The bus only needs `
 The cargo network failure recorded above was deeper than first diagnosed. Deleting the `ProxyServer` registry value did not fix it, because the value libcurl actually reads is the binary `DefaultConnectionSettings` blob under `...\Internet Settings\Connections` — which still embeds `127.0.0.1:7890`.
 
 Rewriting that blob was rejected: it is opaque binary, and a mistake would break system-wide network settings. The fix instead is `[http] proxy = ""` in `CARGO_HOME/config.toml`. It applies to cargo alone, touches nothing system-wide, and TUNA is fast enough to go direct. `NO_PROXY='*'` remains a valid per-command workaround.
+
+## 2026-10-05 — P1a step 3 complete: sherpa-onnx builds and links
+
+The highest-risk step passed. Every prediction from the research held: no cmake or C++ toolchain needed, the archive URL hardcoded with no override, and the escape hatches functional.
+
+The archive (117 MB, version-locked filename) is fetched through a GitHub prefix proxy and pointed to by `SHERPA_ONNX_ARCHIVE_DIR`, set in `.cargo/config.toml` via cargo's `[env]` section rather than a shell export so IDE builds work too.
+
+An empty crate would not have exercised the linker, so the verification test constructs a `LinearResampler` — no model files required — and checks the output. That is what proves the native library is genuinely linked.
+
+Two findings that change later steps:
+
+- **sherpa-onnx ships its own `vad`, `offline_punctuation` and `resampler` modules.** P1a steps 6 and 8 therefore need no additional libraries, and resampling may not need `rubato` either.
+- **`OfflineQwen3ASRModelConfig` exists in 1.13.8**, contradicting the earlier research note that Qwen3-ASR had only a community ONNX port and thus high integration risk. Having a config is not the same as having official converted weights, so no decision changes yet — but §5.6 of `design.md` needs revisiting once that is checked.

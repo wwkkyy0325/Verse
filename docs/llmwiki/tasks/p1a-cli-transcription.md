@@ -20,13 +20,20 @@ This machine already runs TUNA rather than the rsproxy.cn suggested in `design.m
 
 **Verify:** `cargo fetch` completes with a fresh dependency and no per-command workaround. ✅
 
-## [ ] 3. Get sherpa-onnx to build
+## [x] 3. Get sherpa-onnx to build
 
-The highest-risk step. Pre-download the version-locked archive via a GitHub prefix proxy, then build with `SHERPA_ONNX_ARCHIVE_DIR` set.
+The highest-risk step, and it passed. `sherpa-onnx` pinned at `1.13.8` with the default `static` feature.
 
-Before starting: pin the `sherpa-onnx` crate version and record the exact archive filename it expects.
+What actually happened:
 
-**Verify:** `cargo build -p verse-asr` links successfully. Record which escape hatch worked in the task notes — it goes in the README.
+- The build script's URL is confirmed hardcoded with **no override variable**: `github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-win-x64-static-MT-Release-lib.tar.bz2`, 123,206,268 bytes.
+- Direct GitHub is unreachable from here; `ghfast.top`, `gh-proxy.com` and `ghproxy.net` all serve the file with range support.
+- **No cmake and no C++ toolchain were needed** — the archive bundles prebuilt static libraries including onnxruntime, confirming the research.
+- `SHERPA_ONNX_ARCHIVE_DIR` is set in `.cargo/config.toml` via cargo's `[env]` section rather than a shell export, so command-line and IDE builds both resolve it. The archive lives in `.sherpa-onnx-libs/` (gitignored) so `cargo clean` does not discard it.
+
+**Verify:** `cargo test -p verse-asr` links and runs. An empty crate would never exercise the linker, so the test constructs a `LinearResampler` (48 kHz → 16 kHz, no model files needed) and checks the output length. Passing proves the native library is genuinely linked and callable. ✅
+
+**Bonus findings:** sherpa-onnx ships its own `vad`, `offline_punctuation` and `resampler` modules, so steps 6 and 8 need no extra libraries. `OfflineQwen3ASRModelConfig` also exists — see the changelog.
 
 ## [ ] 4. Manually obtain Paraformer-large int8
 

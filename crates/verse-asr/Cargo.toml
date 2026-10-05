@@ -7,4 +7,5 @@ license.workspace = true
 description = "Speech recognition engine implementations for Verse"
 
 [dependencies]
+sherpa-onnx = "1.13.8"
 verse-core.workspace = true
