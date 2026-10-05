@@ -1,0 +1,9 @@
+[package]
+name = "verse-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Domain model, traits, events, registry and routing for Verse"
+
+[dependencies]

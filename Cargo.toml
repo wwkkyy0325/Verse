@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/verse-core",
+    "crates/verse-audio",
+    "crates/verse-asr",
+    "crates/verse-model",
+    "crates/verse-cli",
+    "crates/verse-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+verse-core = { path = "crates/verse-core" }
+verse-audio = { path = "crates/verse-audio" }
+verse-asr = { path = "crates/verse-asr" }
+verse-model = { path = "crates/verse-model" }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

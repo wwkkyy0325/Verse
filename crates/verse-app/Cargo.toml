@@ -1,0 +1,17 @@
+[package]
+name = "verse-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Desktop GUI for Verse"
+
+[[bin]]
+name = "verse-app"
+path = "src/main.rs"
+
+[dependencies]
+verse-core.workspace = true
+verse-audio.workspace = true
+verse-asr.workspace = true
+verse-model.workspace = true

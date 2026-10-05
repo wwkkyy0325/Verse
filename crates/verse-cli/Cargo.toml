@@ -1,0 +1,17 @@
+[package]
+name = "verse-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Command-line interface for Verse"
+
+[[bin]]
+name = "verse"
+path = "src/main.rs"
+
+[dependencies]
+verse-core.workspace = true
+verse-audio.workspace = true
+verse-asr.workspace = true
+verse-model.workspace = true

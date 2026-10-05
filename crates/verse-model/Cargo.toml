@@ -1,0 +1,10 @@
+[package]
+name = "verse-model"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Model catalogue and multi-source downloader for Verse"
+
+[dependencies]
+verse-core.workspace = true

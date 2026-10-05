@@ -1,0 +1,10 @@
+[package]
+name = "verse-asr"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Speech recognition engine implementations for Verse"
+
+[dependencies]
+verse-core.workspace = true

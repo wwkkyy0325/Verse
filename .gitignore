@@ -1,0 +1,6 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# Downloaded model weights are external files, never committed.
+/models
