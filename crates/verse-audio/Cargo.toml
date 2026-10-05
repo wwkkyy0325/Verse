@@ -7,4 +7,5 @@ license.workspace = true
 description = "Audio decoding and capture for Verse"
 
 [dependencies]
+sherpa-onnx.workspace = true
 verse-core.workspace = true

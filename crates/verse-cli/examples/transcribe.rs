@@ -52,7 +52,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut transcript = engine.finalize()?;
 
-    eprintln!("decoded {chunks} chunks, {} segment(s)", transcript.segments.len());
+    eprintln!(
+        "decoded {chunks} chunks, {} segment(s)",
+        transcript.segments.len()
+    );
 
     // Punctuation is a chain stage, not a hard-coded step. SenseVoice needs no
     // stage here; Paraformer does.

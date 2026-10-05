@@ -44,13 +44,8 @@ pub fn register_builtin_engines(registry: &mut Registry) {
         factory: Arc::new(|cfg| {
             let model = cfg.model_dir.join("model.int8.onnx");
             let tokens = cfg.model_dir.join("tokens.txt");
-            let engine = OfflineEngine::sensevoice(
-                &model,
-                &tokens,
-                cfg.threads,
-                Language::Auto,
-                true,
-            )?;
+            let engine =
+                OfflineEngine::sensevoice(&model, &tokens, cfg.threads, Language::Auto, true)?;
             Ok(Box::new(engine) as Box<dyn verse_core::AsrEngine>)
         }),
     });

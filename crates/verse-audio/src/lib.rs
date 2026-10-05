@@ -11,7 +11,9 @@
 pub mod convert;
 pub mod decode;
 pub mod ffmpeg;
+pub mod vad;
 
 pub use convert::{transcode, TranscodeRequest};
 pub use decode::FfmpegDecoder;
 pub use ffmpeg::{is_available as ffmpeg_available, locate as locate_ffmpeg, FFMPEG_ENV};
+pub use vad::SileroVad;

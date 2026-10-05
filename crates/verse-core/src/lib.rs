@@ -27,7 +27,7 @@ pub use registry::{
 };
 pub use router::{CancelToken, Job, JobInput, Pipeline, Router, RuntimeContext};
 pub use text::{TextChain, TextProcessor};
-pub use traits::{AsrEngine, AudioSource, TextSink};
+pub use traits::{AsrEngine, AudioSource, Segmenter, TextSink};
 
 #[cfg(test)]
 mod tests {

@@ -21,6 +21,11 @@ verse-audio = { path = "crates/verse-audio" }
 verse-asr = { path = "crates/verse-asr" }
 verse-model = { path = "crates/verse-model" }
 
+# Pinned deliberately: the native library archive is version-locked to this
+# version, so a bump means pre-staging a differently-named archive.
+# See docs/llmwiki/design.md §7.2.
+sherpa-onnx = "1.13.8"
+
 [profile.release]
 lto = true
 codegen-units = 1

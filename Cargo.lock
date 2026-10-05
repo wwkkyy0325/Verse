@@ -962,6 +962,7 @@ dependencies = [
 name = "verse-audio"
 version = "0.1.0"
 dependencies = [
+ "sherpa-onnx",
  "verse-core",
 ]
 

@@ -138,7 +138,7 @@ fn corrupt_input_fails_with_ffmpeg_message_rather_than_hanging() {
         }
     };
 
-    let err = outcome.err().expect("garbage input must fail");
+    let err = outcome.expect_err("garbage input must fail");
     assert!(
         err.message().contains("ffmpeg"),
         "the error should carry ffmpeg's own message, got: {}",

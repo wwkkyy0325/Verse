@@ -59,7 +59,9 @@ impl TextChain {
     pub fn run(&self, input: &str) -> String {
         self.processors
             .iter()
-            .fold(input.to_string(), |text, processor| processor.process(&text))
+            .fold(input.to_string(), |text, processor| {
+                processor.process(&text)
+            })
     }
 
     /// Apply the chain to every segment of a transcript.

@@ -13,6 +13,28 @@ pub trait AudioSource: Send {
     fn next_chunk(&mut self) -> Result<Option<AudioChunk>>;
 }
 
+/// Splits an audio stream into speech spans.
+///
+/// This is what bounds memory. A long recording is cut into spans and each one
+/// is recognized independently, so peak memory follows span length rather than
+/// file length — otherwise a two-hour file would hold two hours of PCM
+/// resident. The span boundaries are also what become subtitle timestamps.
+pub trait Segmenter: Send {
+    /// Feed audio. Spans completed by this input become available to [`take`].
+    ///
+    /// [`take`]: Segmenter::take
+    fn accept(&mut self, chunk: &AudioChunk) -> Result<()>;
+
+    /// Remove and return the spans completed so far.
+    fn take(&mut self) -> Vec<AudioChunk>;
+
+    /// Signal end of stream, then take whatever remains.
+    fn finish(&mut self) -> Vec<AudioChunk>;
+
+    /// Discard buffered audio and any queued spans.
+    fn reset(&mut self);
+}
+
 /// A speech recognition backend.
 ///
 /// Offline engines buffer everything passed to [`accept`](AsrEngine::accept)
