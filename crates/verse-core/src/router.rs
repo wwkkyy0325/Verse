@@ -74,7 +74,11 @@ pub struct RuntimeContext {
 
 impl RuntimeContext {
     pub fn new(registry: Arc<Registry>, events: EventBus) -> Self {
-        Self { registry, events, cancel: CancelToken::new() }
+        Self {
+            registry,
+            events,
+            cancel: CancelToken::new(),
+        }
     }
 }
 

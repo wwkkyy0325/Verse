@@ -34,13 +34,14 @@ pub struct Error {
 
 impl Error {
     pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
-        Self { kind, message: message.into(), source: None }
+        Self {
+            kind,
+            message: message.into(),
+            source: None,
+        }
     }
 
-    pub fn with_source(
-        mut self,
-        source: impl std::error::Error + Send + Sync + 'static,
-    ) -> Self {
+    pub fn with_source(mut self, source: impl std::error::Error + Send + Sync + 'static) -> Self {
         self.source = Some(Box::new(source));
         self
     }
@@ -74,7 +75,9 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.source.as_ref().map(|e| e.as_ref() as &(dyn std::error::Error + 'static))
+        self.source
+            .as_ref()
+            .map(|e| e.as_ref() as &(dyn std::error::Error + 'static))
     }
 }
 
@@ -88,7 +91,10 @@ pub struct ErrorInfo {
 
 impl From<&Error> for ErrorInfo {
     fn from(err: &Error) -> Self {
-        Self { kind: err.kind, message: err.message.clone() }
+        Self {
+            kind: err.kind,
+            message: err.message.clone(),
+        }
     }
 }
 

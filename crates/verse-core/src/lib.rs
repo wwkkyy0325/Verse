@@ -76,7 +76,10 @@ mod tests {
         }
 
         fn run(&mut self, job: Job, ctx: &RuntimeContext) -> Result<()> {
-            ctx.events.publish(Event::JobStarted { id: job.id, kind: job.kind });
+            ctx.events.publish(Event::JobStarted {
+                id: job.id,
+                kind: job.kind,
+            });
             for step in 0..4u32 {
                 ctx.cancel.check()?;
                 ctx.events.publish(Event::JobProgress {
@@ -105,7 +108,11 @@ mod tests {
     }
 
     fn file_job() -> Job {
-        Job::new(JobId(1), JobKind::FileTranscribe, JobInput::File(PathBuf::from("a.mp3")))
+        Job::new(
+            JobId(1),
+            JobKind::FileTranscribe,
+            JobInput::File(PathBuf::from("a.mp3")),
+        )
     }
 
     // ---- event bus ----------------------------------------------------
@@ -116,10 +123,20 @@ mod tests {
         let for_job_1 = bus.subscribe(|e| e.job() == Some(JobId(1)));
         let everything = bus.subscribe_all();
 
-        bus.publish(Event::JobStarted { id: JobId(1), kind: JobKind::FileTranscribe });
-        bus.publish(Event::JobStarted { id: JobId(2), kind: JobKind::LiveSubtitle });
+        bus.publish(Event::JobStarted {
+            id: JobId(1),
+            kind: JobKind::FileTranscribe,
+        });
+        bus.publish(Event::JobStarted {
+            id: JobId(2),
+            kind: JobKind::LiveSubtitle,
+        });
         bus.publish(Event::HardwareProbed {
-            profile: HardwareProfile { avx2: true, fma: true, cores: 8 },
+            profile: HardwareProfile {
+                avx2: true,
+                fma: true,
+                cores: 8,
+            },
         });
 
         assert_eq!(for_job_1.drain().len(), 1);
@@ -156,11 +173,18 @@ mod tests {
             id: "stub",
             display_name: "Stub engine",
             streaming: false,
-            factory: Arc::new(|_cfg| Ok(Box::new(StubEngine { accepted: 0 }) as Box<dyn AsrEngine>)),
+            factory: Arc::new(
+                |_cfg| Ok(Box::new(StubEngine { accepted: 0 }) as Box<dyn AsrEngine>),
+            ),
         });
 
-        let cfg = EngineConfig { model_dir: PathBuf::from("."), threads: 2 };
-        let engine = registry.create_engine("stub", &cfg).expect("registered engine resolves");
+        let cfg = EngineConfig {
+            model_dir: PathBuf::from("."),
+            threads: 2,
+        };
+        let engine = registry
+            .create_engine("stub", &cfg)
+            .expect("registered engine resolves");
         assert!(!engine.is_streaming());
 
         let err = registry
@@ -168,7 +192,10 @@ mod tests {
             .err()
             .expect("unknown id fails");
         assert_eq!(err.kind(), ErrorKind::Registry);
-        assert!(err.message().contains("nope"), "message should name the missing id");
+        assert!(
+            err.message().contains("nope"),
+            "message should name the missing id"
+        );
     }
 
     #[test]
@@ -178,7 +205,9 @@ mod tests {
             id: "stub",
             display_name: "Stub engine",
             streaming: false,
-            factory: Arc::new(|_cfg| Ok(Box::new(StubEngine { accepted: 0 }) as Box<dyn AsrEngine>)),
+            factory: Arc::new(
+                |_cfg| Ok(Box::new(StubEngine { accepted: 0 }) as Box<dyn AsrEngine>),
+            ),
         });
 
         let ids: Vec<_> = registry.engines().map(|d| d.id).collect();
@@ -192,19 +221,30 @@ mod tests {
         let ctx = stub_context();
         let sub = ctx.events.subscribe_all();
 
-        stub_router().run(&file_job(), &ctx).expect("stub pipeline succeeds");
+        stub_router()
+            .run(&file_job(), &ctx)
+            .expect("stub pipeline succeeds");
 
         let events = sub.drain();
         assert!(
-            matches!(events.first().map(|e| e.as_ref()), Some(Event::JobStarted { .. })),
+            matches!(
+                events.first().map(|e| e.as_ref()),
+                Some(Event::JobStarted { .. })
+            ),
             "first event should be JobStarted"
         );
         assert!(
-            matches!(events.last().map(|e| e.as_ref()), Some(Event::JobFinished { .. })),
+            matches!(
+                events.last().map(|e| e.as_ref()),
+                Some(Event::JobFinished { .. })
+            ),
             "last event should be JobFinished"
         );
         assert_eq!(
-            events.iter().filter(|e| matches!(e.as_ref(), Event::JobProgress { .. })).count(),
+            events
+                .iter()
+                .filter(|e| matches!(e.as_ref(), Event::JobProgress { .. }))
+                .count(),
             4
         );
     }
@@ -215,10 +255,14 @@ mod tests {
         let sub = ctx.events.subscribe_all();
         ctx.cancel.cancel();
 
-        let err = stub_router().run(&file_job(), &ctx).expect_err("cancelled job fails");
+        let err = stub_router()
+            .run(&file_job(), &ctx)
+            .expect_err("cancelled job fails");
         assert_eq!(err.kind(), ErrorKind::Cancelled);
         assert!(
-            !sub.drain().iter().any(|e| matches!(e.as_ref(), Event::JobFinished { .. })),
+            !sub.drain()
+                .iter()
+                .any(|e| matches!(e.as_ref(), Event::JobFinished { .. })),
             "a cancelled job must not report completion"
         );
     }
@@ -228,7 +272,9 @@ mod tests {
         let ctx = stub_context();
         let job = Job::new(JobId(9), JobKind::LiveSubtitle, JobInput::Live);
 
-        let err = stub_router().run(&job, &ctx).expect_err("unregistered kind fails");
+        let err = stub_router()
+            .run(&job, &ctx)
+            .expect_err("unregistered kind fails");
         assert_eq!(err.kind(), ErrorKind::Registry);
         assert!(
             err.message().contains("LiveSubtitle"),

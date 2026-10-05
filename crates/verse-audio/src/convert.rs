@@ -91,7 +91,10 @@ pub fn transcode(request: &TranscodeRequest) -> Result<()> {
     let ffmpeg = ffmpeg::locate()?;
 
     let mut cmd = Command::new(ffmpeg);
-    cmd.arg("-hide_banner").arg("-loglevel").arg("error").arg("-y");
+    cmd.arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-y");
     cmd.arg("-i").arg(&request.input);
 
     if let Some(codec) = &request.codec {

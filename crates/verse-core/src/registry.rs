@@ -26,12 +26,9 @@ pub struct SinkConfig {
     pub path: Option<PathBuf>,
 }
 
-pub type EngineFactory =
-    Arc<dyn Fn(&EngineConfig) -> Result<Box<dyn AsrEngine>> + Send + Sync>;
-pub type SourceFactory =
-    Arc<dyn Fn(&SourceConfig) -> Result<Box<dyn AudioSource>> + Send + Sync>;
-pub type SinkFactory =
-    Arc<dyn Fn(&SinkConfig) -> Result<Box<dyn TextSink>> + Send + Sync>;
+pub type EngineFactory = Arc<dyn Fn(&EngineConfig) -> Result<Box<dyn AsrEngine>> + Send + Sync>;
+pub type SourceFactory = Arc<dyn Fn(&SourceConfig) -> Result<Box<dyn AudioSource>> + Send + Sync>;
+pub type SinkFactory = Arc<dyn Fn(&SinkConfig) -> Result<Box<dyn TextSink>> + Send + Sync>;
 
 /// A registered recognition backend.
 pub struct EngineDescriptor {

@@ -22,7 +22,10 @@ pub struct AudioFormat {
 
 impl AudioFormat {
     /// The format the recognition engines expect.
-    pub const TARGET: Self = Self { sample_rate: 16_000, channels: 1 };
+    pub const TARGET: Self = Self {
+        sample_rate: 16_000,
+        channels: 1,
+    };
 }
 
 /// A block of mono f32 PCM samples with its offset from the start of the

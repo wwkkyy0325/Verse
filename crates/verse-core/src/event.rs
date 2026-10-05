@@ -26,20 +26,48 @@ pub enum JobKind {
 #[derive(Debug, Clone)]
 pub enum Event {
     // ---- job lifecycle ----
-    JobStarted { id: JobId, kind: JobKind },
-    JobProgress { id: JobId, position: Duration, fraction: f32 },
-    JobFinished { id: JobId },
-    JobFailed { id: JobId, error: ErrorInfo },
-    JobCancelled { id: JobId },
+    JobStarted {
+        id: JobId,
+        kind: JobKind,
+    },
+    JobProgress {
+        id: JobId,
+        position: Duration,
+        fraction: f32,
+    },
+    JobFinished {
+        id: JobId,
+    },
+    JobFailed {
+        id: JobId,
+        error: ErrorInfo,
+    },
+    JobCancelled {
+        id: JobId,
+    },
 
     // ---- pipeline output ----
-    TranscriptDelta { job: JobId, delta: TranscriptDelta },
-    TranscriptSegment { job: JobId, segment: Segment },
-    TranscriptFinal { job: JobId, transcript: Transcript },
+    TranscriptDelta {
+        job: JobId,
+        delta: TranscriptDelta,
+    },
+    TranscriptSegment {
+        job: JobId,
+        segment: Segment,
+    },
+    TranscriptFinal {
+        job: JobId,
+        transcript: Transcript,
+    },
 
     // ---- environment ----
-    HardwareProbed { profile: HardwareProfile },
-    ModelStateChanged { model: ModelId, state: ModelState },
+    HardwareProbed {
+        profile: HardwareProfile,
+    },
+    ModelStateChanged {
+        model: ModelId,
+        state: ModelState,
+    },
 }
 
 impl Event {
@@ -113,7 +141,11 @@ impl EventBus {
             filter: Box::new(filter),
             tx,
         });
-        Subscription { id, rx, bus: Arc::downgrade(&self.inner) }
+        Subscription {
+            id,
+            rx,
+            bus: Arc::downgrade(&self.inner),
+        }
     }
 
     pub fn subscribe_all(&self) -> Subscription {
@@ -167,7 +199,11 @@ impl Subscription {
 impl Drop for Subscription {
     fn drop(&mut self) {
         if let Some(inner) = self.bus.upgrade() {
-            inner.subscribers.lock().unwrap().retain(|s| s.id != self.id);
+            inner
+                .subscribers
+                .lock()
+                .unwrap()
+                .retain(|s| s.id != self.id);
         }
     }
 }

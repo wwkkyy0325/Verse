@@ -31,7 +31,9 @@ fn main() {
 
     let config = OfflineRecognizerConfig {
         model_config: OfflineModelConfig {
-            paraformer: OfflineParaformerModelConfig { model: Some(model.clone()) },
+            paraformer: OfflineParaformerModelConfig {
+                model: Some(model.clone()),
+            },
             tokens: Some(tokens.clone()),
             num_threads: 2,
             ..Default::default()
