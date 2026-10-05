@@ -11,18 +11,20 @@ pub mod domain;
 pub mod error;
 pub mod event;
 pub mod export;
+pub mod hardware;
 pub mod registry;
 pub mod router;
 pub mod text;
 pub mod traits;
 
 pub use domain::{
-    AudioChunk, AudioFormat, HardwareProfile, JobId, ModelId, ModelState, Segment, SegmentId,
-    Transcript, TranscriptDelta,
+    AudioChunk, AudioFormat, JobId, ModelId, ModelState, Segment, SegmentId, Transcript,
+    TranscriptDelta,
 };
 pub use error::{Error, ErrorInfo, ErrorKind, Result};
 pub use event::{Event, EventBus, JobKind, Subscription};
 pub use export::Format as ExportFormat;
+pub use hardware::{HardwareProfile, Tier};
 pub use registry::{
     EngineConfig, EngineDescriptor, Registry, SinkConfig, SinkDescriptor, SourceConfig,
     SourceDescriptor,

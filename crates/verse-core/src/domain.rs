@@ -94,28 +94,6 @@ impl Transcript {
     }
 }
 
-/// What the machine can do, probed once at startup. Drives model tier and
-/// thread count selection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HardwareProfile {
-    pub avx2: bool,
-    pub fma: bool,
-    pub cores: usize,
-}
-
-impl HardwareProfile {
-    /// Threads available to the recognition engine. One core is reserved for
-    /// the UI so the window stays responsive on older machines.
-    pub fn engine_threads(&self) -> usize {
-        self.cores.saturating_sub(1).max(1)
-    }
-
-    /// Whether this machine should avoid the larger model tiers.
-    pub fn is_limited(&self) -> bool {
-        !self.avx2
-    }
-}
-
 /// Lifecycle of a model on disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelState {

@@ -1,7 +1,6 @@
-use crate::domain::{
-    HardwareProfile, JobId, ModelId, ModelState, Segment, Transcript, TranscriptDelta,
-};
+use crate::domain::{JobId, ModelId, ModelState, Segment, Transcript, TranscriptDelta};
 use crate::error::ErrorInfo;
+use crate::hardware::HardwareProfile;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, Weak};
