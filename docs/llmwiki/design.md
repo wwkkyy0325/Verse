@@ -44,19 +44,19 @@ Two delivery modes:
 ### 4.1 Crate layout
 
 ```
-verse-core     Domain model, traits, events, registry, router, export   [lib]
-verse-audio    decode + convert (ffmpeg sidecar) / capture (P2)         [lib]
-verse-asr      Engine implementations — sherpa-onnx FFI lives here      [lib]
-verse-model    Model catalog + multi-source resumable downloader        [lib]
-verse-cli      Command-line entry point                                 [bin]
-verse-app      slint GUI                                                [bin]
+verse-core     Domain model, traits, events, registry, router, text chain  [lib]
+verse-audio    decode + convert (ffmpeg sidecar), VAD segmentation         [lib]
+verse-asr      Engine implementations — sherpa-onnx FFI lives here         [lib]
+verse-model    Model catalog + multi-source resumable downloader           [lib]
+verse-cli      Command-line entry point                                    [bin]
+verse-app      slint GUI                                                   [bin]
 ```
 
 Three boundaries justify the splits:
 
-- **All traits live in `verse-core`; only implementations live elsewhere.** `AsrEngine` is defined in `verse-core` (pure abstraction, no FFI) and implemented in `verse-asr`. This is what lets the registry in §4.6 hold engine factories without `verse-core` ever linking sherpa-onnx. `verse-asr` isolates the FFI and its build-time cost, so `verse-core` unit tests stay fast.
+- **All traits live in `verse-core`; only implementations live elsewhere.** `AudioSource`, `Segmenter`, `AsrEngine`, `TextProcessor` and `TextSink` are defined there as pure abstractions. This is what lets the registry (§4.6) hold implementations without `verse-core` ever linking sherpa-onnx, and it is what makes swapping an engine or inserting a text stage a configuration change rather than a code change.
 - `verse-model` isolates all network access. This is what makes the offline guarantee structural (§4.5).
-- `verse-audio` holds two modules with different platform dependencies, sharing one resampler: `decode` (pure Rust, P1) and `capture` (cpal + platform loopback, P2). Feature flags keep `cpal` out of P1 builds.
+- `verse-audio` and `verse-asr` are the two crates that touch native code — ffmpeg through a child process, sherpa-onnx through FFI. `verse-core` unit tests therefore link neither, and stay fast.
 
 ### 4.2 Core traits
 
@@ -207,29 +207,39 @@ Cost: it remains FFI, and it pulls a native dependency (§7.2). Accepted, becaus
 
 ### 5.3 Model tiers (Phase 1, file transcription)
 
-| Tier | Model | Size | Distribution | License |
-|------|-------|------|--------------|---------|
-| **Bundled default** | Paraformer-large int8 | ~220 MB | **Ships in the installer** | **Apache-2.0, clean** |
-| Optional | SenseVoice-Small int8 | ~230 MB | Download on demand | ⚠️ **ambiguous — see below** |
-| Optional | FireRedASR2-AED int8 | ~1.1 GB | Download on demand | Apache-2.0 |
+| Tier | Model | Size | Role | License |
+|------|-------|------|------|---------|
+| **Default** | SenseVoice-Small int8 | 228 MB | Punctuates and normalizes internally. zh / en / yue / ja / ko | ⚠️ FunASR Model License v1.1 |
+| Alternate | Paraformer-large int8 | 227 MB | Registered and swappable. Needs a separate punctuation stage | Apache-2.0 |
+| Optional | FireRedASR2-AED int8 | ~1.1 GB | Best Chinese accuracy, but 0.3–1x realtime | Apache-2.0 |
 
-**Distribution model:** the installer bundles one lightweight model so the app transcribes correctly on first launch with no network at all. Heavier models are opt-in downloads from the settings page. This costs installer size (~250 MB) and buys a genuinely zero-setup first run.
+**Why SenseVoice is the default.** It roughly halves the footprint: 228 MB against 227 + 294 MB for Paraformer plus its punctuation model. It also covers five languages rather than two, which costs nothing.
 
-The bundled model must have an unambiguous license, which is why it is Paraformer-large and not SenseVoice. SenseVoice is additionally excluded from bundling because *redistributing* it poses the unresolved license question more sharply than downloading it does.
+**Its license is not Apache-2.0**, despite a widely-copied ModelScope metadata field saying so. The official HuggingFace card has always pointed at the custom FunASR Model License v1.1, which *does* permit commercial use but requires attribution, retention of the model name, and shipping the license text. `THIRD_PARTY_NOTICES.md` records the obligations. Acceptable for an open-source project; it would need review for a closed-source one.
 
-The exact bundled model is selected in P1a step 4 — prefer a smaller offline Chinese model if one benchmarks acceptably below ~220 MB.
+**Accuracy caveat — measured, not assumed.** On three sample clips:
 
-**SenseVoice license conflict (must resolve before it can become a default):** the HuggingFace model card says `apache-2.0`, while the upstream FunASR repository ships a custom `MODEL_LICENSE`. These contradict each other. Treat as unresolved for commercial use.
+| clip | SenseVoice | Paraformer + punctuation |
+|------|------------|--------------------------|
+| pure Chinese, short | identical | identical |
+| pure Chinese | `开饭时间` (wrong) | `开放时间` (right) |
+| Chinese / English mixed | `Tuesdayesday` (repeated) | correct |
 
-Cross-benchmark CER numbers are not strictly comparable — different test sets (AISHELL, WenetSpeech, FLEURS, real-clip micro-CER). Do not rank models from the table above on CER alone.
+Both SenseVoice errors landed on English content, which matters because English is the secondary language here and mixed speech is the realistic input. Three short clips is not a verdict — but it is the reason Paraformer stays registered and one configuration change away rather than removed.
 
-### 5.4 Punctuation (resolved)
+**Switching engines is configuration.** Both are registered in `verse-asr::register_builtin_engines`; a model directory holds `model.int8.onnx` and `tokens.txt`. Nothing outside the registry knows which one is in use.
 
-Paraformer outputs unpunctuated text. The first real transcription confirmed how unusable that is: `对我做了介绍啊那么我想说的是呢大家如果对我的研究感兴趣呢嗯`.
+Cross-benchmark CER numbers are not strictly comparable — different test sets (AISHELL, WenetSpeech, FLEURS, real-clip micro-CER). Do not rank models on a CER table alone.
 
-The model is `csukuangfj/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12` (CT-Transformer), loaded through sherpa-onnx's `OfflinePunctuation`. It needs no tokens file — the vocabulary is embedded in the ONNX graph.
+### 5.4 Punctuation
 
-**It costs 294 MB — more than the recognition model itself.** That is real weight against the lightweight goal and belongs in the size budget. SenseVoice punctuates internally and would have avoided it, but its unresolved license keeps it out of the default path.
+Paraformer emits bare text — `对我做了介绍啊那么我想说的是呢大家如果对我的研究感兴趣呢嗯` — which is unusable as subtitles.
+
+SenseVoice punctuates internally, so the default path needs no stage here. That is most of why it is the default: it removes a 294 MB model from the bundle.
+
+When Paraformer is selected, the stage is `verse_asr::Punctuator`, wrapping `csukuangfj/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12` through sherpa-onnx's `OfflinePunctuation`. No tokens file is needed — the vocabulary is embedded in the ONNX graph.
+
+It is a `TextProcessor` stage, not a special case wired into the pipeline. Inserting it is a single `TextChain::push` call, which is what keeps this decision reversible.
 
 ### 5.5 Phase 2: streaming and translation
 

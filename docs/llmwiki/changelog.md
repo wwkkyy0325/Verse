@@ -78,3 +78,20 @@ New obligation: Verse now depends on an ffmpeg executable. Discovery is `VERSE_F
 **Punctuation done, ahead of VAD**, because the first transcription made the need obvious. `verse_asr::Punctuator` wraps sherpa-onnx's CT-Transformer model; no tokens file is needed because the vocabulary is embedded in the ONNX graph.
 
 **The punctuation model is 294 MB — larger than the recognizer's 227 MB.** Combined with the streaming model Phase 2 will need, the size budget is becoming a genuine problem for the lightweight goal. Nothing is decided yet, but it should not stay unexamined.
+
+## 2026-10-05 — Size problem addressed: SenseVoice default, pipeline decoupled
+
+The 521 MB default (Paraformer + punctuation) is replaced by **SenseVoice-Small at 228 MB**, which punctuates and normalizes internally. That is a 56% reduction, and it adds Cantonese, Japanese and Korean for free. Paraformer and its punctuation stage stay registered — switching is a configuration change.
+
+**The license is resolved, and the earlier reading was wrong.** SenseVoice is not Apache-2.0: the official HuggingFace card has always pointed at the custom FunASR Model License v1.1, and the Apache label comes from a ModelScope metadata field that other hosts copied. The custom license *does* permit commercial use, subject to attribution, retaining the model name, and shipping the license text. `THIRD_PARTY_NOTICES.md` now records every obligation, including that the license can be revised unilaterally — hence pinning model revisions and archiving the terms.
+
+**Accuracy measured rather than assumed.** Across three clips SenseVoice matched Paraformer on one, made a character error on another, and produced a repeated-word error (`Tuesdayesday`) on Chinese/English mixed audio. Both errors fell on English content. Three clips is not a verdict, but it is why Paraformer remains one configuration change away instead of deleted. Recorded in `design.md` §5.3.
+
+**Decoupling.** Two new abstractions, both in `verse-core`:
+
+- `TextProcessor` / `TextChain` — punctuation, translation and ITN are all text-in/text-out, so they share one trait instead of each being a special case. The contract forbids swallowing data: a failing stage returns its input unchanged.
+- `Segmenter` — VAD is the first implementation; it also bounds memory, since spans are recognized independently and capped at 20 seconds.
+
+`verse-asr` gained `OfflineEngine`, implementing `AsrEngine` for both models, and `register_builtin_engines` which wires them into the registry. Adding an engine is adding a descriptor.
+
+Also added: Silero VAD (2.3 MB), and the `Segmenter` verification uncovered that span offsets are cumulative from the stream start — established by a differential test after an absolute assertion failed.

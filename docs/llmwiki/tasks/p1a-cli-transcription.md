@@ -51,11 +51,15 @@ hf-mirror 302-redirects large files to the Xet CDN (`cas-bridge.xethub.hf.co`), 
 
 **Verify:** four integration tests, all passing. Decoding a 2 s stereo 44.1 kHz tone to the 16 kHz mono target produces the expected frame count within a 0.1 s tolerance — so resampling and downmixing genuinely happen. Chunks come back bounded and in order. A WAV→MP3 conversion produces a non-empty file that decodes back. A missing input fails before ffmpeg is even invoked, with the path in the message. ✅
 
-## [ ] 6. VAD segmentation
+## [x] 6. VAD segmentation
 
-Silero VAD via sherpa-onnx. Split the PCM stream into speech segments. Peak memory must be bounded by segment length, not file length.
+`verse_audio::SileroVad` implements a new `Segmenter` trait. Spans are capped at 20 seconds, which is the actual ceiling on memory — a span is held resident while being recognized, so without a cap unbroken speech would defeat the point of segmenting.
 
-**Verify:** a 30-minute file produces a plausible segment count; peak RSS stays flat during decode.
+One thing had to be established rather than assumed: the detector reports span offsets as sample indices relative to everything it has seen, not to the current buffer. That is pinned down by a differential test rather than an absolute one — the same speech is segmented with and without two seconds of leading silence, and the shift has to match. The first attempt asserted an absolute offset and failed, because the sample is a real recording that opens with silence of its own.
+
+**Verify:** two integration tests pass. Offsets accumulate from the stream start; spans carry real audio and never exceed the input length. ✅
+
+Not yet verified: the 30-minute file and flat-RSS check from the original plan. That needs a long recording; it belongs with step 10, where a real end-to-end run happens anyway.
 
 ## [ ] 7. AsrEngine trait and Paraformer backend
 
