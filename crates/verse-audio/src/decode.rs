@@ -7,6 +7,7 @@
 use std::io::Read;
 use std::path::Path;
 use std::process::{Child, ChildStdout, Command, Stdio};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use verse_core::{AudioChunk, AudioFormat, AudioSource, Error, ErrorKind, Result};
@@ -28,6 +29,12 @@ pub struct FfmpegDecoder {
     position: Duration,
     /// Set once stdout reports EOF, so we only reap the child once.
     finished: bool,
+    /// stderr is drained on its own thread.
+    ///
+    /// Reading it only after stdout reaches EOF would deadlock: a chatty ffmpeg
+    /// fills the stderr pipe, blocks on the write, and never closes stdout — so
+    /// the EOF this side is waiting for can never arrive.
+    stderr: Option<JoinHandle<String>>,
 }
 
 impl FfmpegDecoder {
@@ -67,33 +74,51 @@ impl FfmpegDecoder {
             .arg("-")
             .stdout(Stdio::piped())
             // Piped, not null, so a decode failure can be reported with
-            // ffmpeg's own message. Safe because `-loglevel error` keeps the
-            // volume far below the pipe buffer.
+            // ffmpeg's own message. It is drained by a background thread —
+            // see the `stderr` field.
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| {
-                Error::new(ErrorKind::Io, format!("failed to start ffmpeg: {e}"))
-            })?;
+            .map_err(|e| Error::new(ErrorKind::Io, format!("failed to start ffmpeg: {e}")))?;
 
         let stdout = child
             .stdout
             .take()
             .ok_or_else(|| Error::internal("ffmpeg stdout was not captured"))?;
 
-        Ok(Self { child, stdout, format, position: Duration::ZERO, finished: false })
+        // Drain stderr from the moment the process starts, so a burst of
+        // errors can never fill the pipe and stall ffmpeg.
+        let stderr = child.stderr.take().map(|mut pipe| {
+            std::thread::spawn(move || {
+                let mut captured = String::new();
+                let _ = pipe.read_to_string(&mut captured);
+                captured
+            })
+        });
+
+        Ok(Self {
+            child,
+            stdout,
+            format,
+            position: Duration::ZERO,
+            finished: false,
+            stderr,
+        })
     }
 
     /// Reap the child and surface its error output if it failed.
     fn finish(&mut self) -> Result<()> {
-        let mut stderr = String::new();
-        if let Some(mut pipe) = self.child.stderr.take() {
-            let _ = pipe.read_to_string(&mut stderr);
-        }
-
         let status = self
             .child
             .wait()
             .map_err(|e| Error::new(ErrorKind::Io, format!("failed to wait for ffmpeg: {e}")))?;
+
+        // The child has exited, so its end of the stderr pipe is closed and the
+        // drain thread has reached EOF.
+        let stderr = self
+            .stderr
+            .take()
+            .and_then(|handle| handle.join().ok())
+            .unwrap_or_default();
 
         if status.success() {
             Ok(())
@@ -152,7 +177,11 @@ impl AudioSource for FfmpegDecoder {
             .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
             .collect();
 
-        let chunk = AudioChunk { samples, format: self.format, start: self.position };
+        let chunk = AudioChunk {
+            samples,
+            format: self.format,
+            start: self.position,
+        };
         self.position += chunk.duration();
         Ok(Some(chunk))
     }

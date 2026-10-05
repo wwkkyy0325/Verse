@@ -100,7 +100,11 @@ fn decodes_only_the_first_chunk_on_demand() {
     let first = decoder.next_chunk().expect("first chunk");
 
     let chunk = first.expect("a two-second tone should yield at least one chunk");
-    assert_eq!(chunk.start, std::time::Duration::ZERO, "first chunk starts at zero");
+    assert_eq!(
+        chunk.start,
+        std::time::Duration::ZERO,
+        "first chunk starts at zero"
+    );
     assert!(
         chunk.samples.len() <= 1_600,
         "chunks should be bounded, got {} samples",
@@ -108,6 +112,40 @@ fn decodes_only_the_first_chunk_on_demand() {
     );
 
     let _ = std::fs::remove_file(&src);
+}
+
+#[test]
+fn corrupt_input_fails_with_ffmpeg_message_rather_than_hanging() {
+    if !ffmpeg_available() {
+        eprintln!("skipping: ffmpeg not available");
+        return;
+    }
+
+    // A plausible extension over contents that are not audio.
+    let broken = temp_file("corrupt.mp3");
+    std::fs::write(&broken, b"this is not audio").expect("write the broken file");
+
+    // Opening succeeds — ffmpeg starts fine and only objects once it reads.
+    let Ok(mut decoder) = FfmpegDecoder::open(&broken, AudioFormat::TARGET) else {
+        panic!("open should succeed; the failure belongs to decoding");
+    };
+
+    let outcome = loop {
+        match decoder.next_chunk() {
+            Ok(Some(_)) => continue,
+            Ok(None) => break Ok(()),
+            Err(e) => break Err(e),
+        }
+    };
+
+    let err = outcome.err().expect("garbage input must fail");
+    assert!(
+        err.message().contains("ffmpeg"),
+        "the error should carry ffmpeg's own message, got: {}",
+        err.message()
+    );
+
+    let _ = std::fs::remove_file(&broken);
 }
 
 #[test]
@@ -130,7 +168,10 @@ fn converts_between_formats() {
 
     // Present is not enough — it has to be readable back.
     let decoder = FfmpegDecoder::open(&mp3, AudioFormat::TARGET).expect("decode the mp3");
-    assert!(count_frames(decoder) > 0, "round-tripped audio should have frames");
+    assert!(
+        count_frames(decoder) > 0,
+        "round-tripped audio should have frames"
+    );
 
     let _ = std::fs::remove_file(&src);
     let _ = std::fs::remove_file(&mp3);
