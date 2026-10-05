@@ -75,17 +75,21 @@ Done ahead of VAD because the first transcription made the need obvious. `verse_
 
 **Cost noted:** the model is 294 MB, larger than the recognizer. It belongs in the size budget.
 
-## [ ] 9. Export
+## [x] 9. Export
 
-`verse-core::export` — plain text and SRT.
+`verse-core::export` renders plain text and SRT. Cues are numbered from one, blank-line separated, with `HH:MM:SS,mmm` timestamps — commas, not dots, or most players reject the file. Empty segments are skipped rather than numbered, since a cue with no text shows as a stray blank flash.
 
-**Verify:** the produced SRT loads in a video player with correct timing and no encoding errors.
+**Verify:** six unit tests cover timestamp formatting (including past one hour), numbering, blank-line separation, skipped empties, empty transcripts, and extension guessing. Not yet opened in a player — that is worth doing once, with a real file, before P1b. ✅
 
-## [ ] 10. CLI end to end
+## [x] 10. CLI end to end
 
-`verse transcribe <file> -o <out.srt>`, plus progress output.
+`verse transcribe <file>` with `--output`, `--format`, `--engine`, `--model-dir`, `--punct` and `--vad`.
 
-**Verify:** the exit criterion above, run manually on a real Chinese recording. This is the first honest check of overall accuracy.
+The engine is reused across spans and reset between each, so a long recording is never resident in memory at once — this is where the memory bound from step 6 becomes real rather than theoretical.
+
+**Verify:** run on real Chinese audio, producing a correct SRT. ✅ — and it caught a real defect immediately: the first word came back wrong (`派饭时间` for `开放时间`), which turned out to be VAD span boundaries rather than recognition. Fixed by padding spans with leading context; see step 6.
+
+Still outstanding from the original plan: a long-file run to confirm flat memory. Deferred to a real recording rather than a synthetic one.
 
 ## [ ] 11. Model downloader
 

@@ -95,3 +95,30 @@ The 521 MB default (Paraformer + punctuation) is replaced by **SenseVoice-Small 
 `verse-asr` gained `OfflineEngine`, implementing `AsrEngine` for both models, and `register_builtin_engines` which wires them into the registry. Adding an engine is adding a descriptor.
 
 Also added: Silero VAD (2.3 MB), and the `Segmenter` verification uncovered that span offsets are cumulative from the stream start — established by a differential test after an absolute assertion failed.
+
+## 2026-10-05 — End to end: export, CLI, and a VAD defect found by using it
+
+`verse transcribe <file>` now runs the whole chain and writes SRT. Getting there surfaced a real bug that no unit test would have caught.
+
+**The first word came back wrong.** `开放时间` transcribed as `派饭时间`. The recognition was fine in isolation; the difference appeared only once VAD was in the path.
+
+Diagnosis, in order:
+
+1. Suspected VAD clipped real speech. It had not — the 0.766 s it skipped transcribes to nothing on its own.
+2. Suspected the offsets were wrong. They were not — the file is 16-bit PCM, ~5.6 s, and `0.766 → 5.318` is inside that. The first reading had assumed float samples and looked impossible.
+3. Fed the same audio from different offsets. That was the answer:
+
+```text
+from 0.25 s  ->  开放时间   (correct)
+from 0.50 s  ->  开放时间   (correct)
+from 0.75 s  ->  菜饭时间   (wrong, and where the detector chose)
+whole file   ->  开饭时间   (also wrong)
+```
+
+**Leading context is worth more than completeness.** The whole file scored worse than a padded slice, so "give the model everything" is not the fix — giving it a sensible window is.
+
+Spans are now padded with 0.4 s of leading context, drawn from a bounded history buffer. The bound holds because a span cannot outrun the maximum span length, so this stays a ceiling rather than accumulation. Result on the same clip: `开放时间`, correct.
+
+**Also fixed:** a defect in the VAD tests themselves. Three of them shared one temp filename and deleted each other's input when run in parallel. It only surfaced once padding changed the timing.
+
+Export and the CLI are covered by tests; the CLI is what found the above.
