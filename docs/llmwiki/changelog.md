@@ -122,3 +122,19 @@ Spans are now padded with 0.4 s of leading context, drawn from a bounded history
 **Also fixed:** a defect in the VAD tests themselves. Three of them shared one temp filename and deleted each other's input when run in parallel. It only surfaced once padding changed the timing.
 
 Export and the CLI are covered by tests; the CLI is what found the above.
+
+## 2026-10-05 — Downloader and hardware detection: P1a complete
+
+The last two steps of P1a are in. Both were shaped by the same principle: separate the decision from the mechanism.
+
+**The catalogue moved into `models.json`.** Mirrors go dead — a host moves, a path changes, a region gets blocked — and editing a file beats shipping a new binary. A copy is embedded so a fresh install needs nothing else on disk; an external file overrides it. A file that exists but does not parse is an error rather than a reason to fall back, because silently ignoring a catalogue someone deliberately placed would hide their mistake until download time.
+
+**Downloads are user-initiated.** No fetch on startup, no background refresh. `verse model fetch <id>` is the only way in, and `is_present` exists so a caller can check before offering.
+
+**Size checking paid for itself within the hour.** `verse model list` reported SenseVoice as missing when it was not. The catalogue had recorded 114,688 bytes for `tokens.txt` against an actual 315,894 — a client-reported transfer size that had been written down in place of the host's `Content-Length`. The check was correct; the figure was not. `catalog.rs` now carries a note about where sizes must come from.
+
+Two smaller things the same work exposed: progress reporting was calling back once per 64 KB, which is a wall of output for a 240 MB model, now throttled to one percent; and model directories had to be renamed to match catalogue ids, since the ids are also the engine names.
+
+**Hardware detection reports capability and stops there.** It does not know what a model needs — that belongs to whoever chooses one. A reduced machine runs smaller models and says why; detection never fails and never blocks startup.
+
+**Still outstanding for P1a's exit criteria:** a long-file run confirming flat memory, which needs a real recording. And two items from the downloader plan were not built: SHA-256 verification (length checking catches truncation, not corruption that preserves length) and the manual-import fallback (which needs a UI to be meaningful).

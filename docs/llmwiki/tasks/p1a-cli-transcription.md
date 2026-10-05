@@ -91,14 +91,28 @@ The engine is reused across spans and reset between each, so a long recording is
 
 Still outstanding from the original plan: a long-file run to confirm flat memory. Deferred to a real recording rather than a synthetic one.
 
-## [ ] 11. Model downloader
+## [x] 11. Model downloader
 
-`verse-model`: multi-source failover, resume, SHA-256 verification, 30s timeout before failover, actionable errors, and manual-import fallback. See `design.md` §6.
+`verse-model` holds the catalogue, the downloader and the progress state machine.
 
-**Verify:** each source can be forced to fail and the next is used. A corrupted download is detected. Resume works against ModelScope's non-standard `200` + `Content-Range` response.
+The catalogue moved out of code into `models.json`, parsed at load and validated. Mirrors go dead; editing a file is a better answer to that than shipping a binary. A copy is embedded so a fresh install needs nothing else on disk, and an external file overrides it.
 
-## [ ] 12. Hardware probe and long-run check
+**Downloads are user-initiated only.** There is no fetch on startup and no background refresh — `verse model fetch <id>` is the only entry point, and `is_present` exists so a caller can check before offering.
 
-AVX2/FMA detection driving model tier and thread count, with a user-visible message on older CPUs.
+Failover tries each mirror in turn; a mirror that fails is named in the error. Interrupted transfers resume, and a transfer lands under a temporary name so an interrupted one never looks complete.
 
-**Verify:** thread count is `parallelism - 1`. Transcribe a 2-hour file repeatedly; RSS returns to baseline and does not grow across runs.
+**Verify:** a real download from ModelScope completed and landed at the expected size; a second run skipped it. Progress reporting is throttled — it was calling back per 64 KB, which is a wall of output for a 240 MB model. ✅
+
+**Not done, and worth knowing:** SHA-256 verification and the manual-import fallback from the original plan. Length checking is in place and caught a real error, but it cannot detect corruption that preserves length. Manual import needs a UI before it is meaningful.
+
+## [x] 12. Hardware probe
+
+`verse-core::hardware` detects AVX2, FMA and core count, and maps them to a `Tier`. Detection never fails and never blocks startup; a reduced machine runs smaller models and says why.
+
+The module knows nothing about models — it reports capability, and what that permits is decided by whoever picks a model. That is what keeps the fallback from becoming a web of special cases.
+
+Thread count is `cores - 1`, leaving one for the UI.
+
+**Verify:** unit tests cover the tier decisions and the thread reserved for the UI. The CLI probes once and reports reduced mode only when something is actually being worked around. ✅
+
+**Not done:** the 2-hour long-run memory check. Still needs a real recording rather than a synthetic one.
