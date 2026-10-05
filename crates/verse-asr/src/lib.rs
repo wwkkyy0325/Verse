@@ -8,6 +8,10 @@
 //! Implementations land in P1a step 7. The traits are `AudioSource`,
 //! `AsrEngine` and `TextSink` in `verse_core::traits`.
 
+pub mod punctuator;
+
+pub use punctuator::Punctuator;
+
 #[cfg(test)]
 mod tests {
     use sherpa_onnx::LinearResampler;
