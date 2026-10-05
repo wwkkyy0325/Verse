@@ -1,0 +1,311 @@
+//! The model catalogue.
+//!
+//! The catalogue lives in `models.json` rather than in code. Mirrors go dead —
+//! a host moves, a path changes, a region gets blocked — and editing a file is
+//! a better answer to that than shipping a new binary. A copy is embedded so a
+//! fresh install still works with nothing else on disk.
+
+use std::collections::HashSet;
+use std::path::Path;
+
+use serde::Deserialize;
+use verse_core::{Error, ErrorKind, Result};
+
+/// The catalogue compiled into this binary.
+const EMBEDDED: &str = include_str!("../models.json");
+
+/// The `version` this build understands.
+///
+/// Checked rather than ignored: a file written for a later format could carry
+/// fields this build would silently drop, and a quietly half-loaded catalogue
+/// is worse than a refusal.
+const SUPPORTED_VERSION: u32 = 1;
+
+/// Sizes in `models.json` must come from the host, not from a finished
+/// download.
+///
+/// A transfer size reported by a client can differ from what lands on disk —
+/// compression, a resumed request, or a truncated download all produce a
+/// plausible-looking number that is not the file's length. Recording one of
+/// those makes every later check fail on a file that is perfectly fine. The
+/// `Content-Length` the mirror reports is the authority; it is also the only
+/// value that can catch a short transfer.
+///
+/// A place to fetch from.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Mirror {
+    /// Shown in progress and error messages, so failures name the culprit.
+    pub name: String,
+    /// Host, e.g. `https://hf-mirror.com`.
+    pub base_url: String,
+    /// Repository path appended to the base URL. Hosts lay the same model out
+    /// differently, so this is per-mirror rather than per-model.
+    pub repo: String,
+}
+
+impl Mirror {
+    /// Full URL for a file.
+    pub fn url_for(&self, file: &str) -> String {
+        format!(
+            "{}/{}/{}",
+            self.base_url.trim_end_matches('/'),
+            self.repo.trim_matches('/'),
+            file.trim_start_matches('/')
+        )
+    }
+}
+
+/// One file of a model.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModelFile {
+    /// Path within the repository.
+    pub remote: String,
+    /// Name it takes on disk.
+    pub local: String,
+    /// Expected length in bytes.
+    ///
+    /// Absent means unknown, which weakens the integrity check to "the file
+    /// exists" — worth knowing, since a truncated transfer can still return
+    /// HTTP 200.
+    #[serde(default)]
+    pub size: Option<u64>,
+}
+
+/// A model and everything needed to fetch it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModelSpec {
+    /// Stable identifier.
+    pub id: String,
+    pub display_name: String,
+    pub files: Vec<ModelFile>,
+    /// Where to try, in order. The first success wins.
+    pub mirrors: Vec<Mirror>,
+}
+
+/// A parsed catalogue.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Catalog {
+    pub version: u32,
+    pub models: Vec<ModelSpec>,
+}
+
+impl Catalog {
+    /// The catalogue built into this binary.
+    pub fn embedded() -> Result<Self> {
+        Self::from_json(EMBEDDED)
+    }
+
+    /// Parse a catalogue from JSON text.
+    pub fn from_json(text: &str) -> Result<Self> {
+        let catalog: Catalog = serde_json::from_str(text).map_err(|e| {
+            Error::new(
+                ErrorKind::Registry,
+                format!("catalogue is not valid JSON: {e}"),
+            )
+        })?;
+        catalog.validate()?;
+        Ok(catalog)
+    }
+
+    /// Read a catalogue from a file.
+    pub fn from_file(path: &Path) -> Result<Self> {
+        let text = std::fs::read_to_string(path).map_err(|e| {
+            Error::new(
+                ErrorKind::Io,
+                format!("could not read catalogue {}: {e}", path.display()),
+            )
+        })?;
+        Self::from_json(&text)
+            .map_err(|e| Error::new(e.kind(), format!("{}: {}", path.display(), e.message())))
+    }
+
+    /// Read `path` if it exists, otherwise fall back to the embedded copy.
+    ///
+    /// A file that exists but does not parse is an error rather than a reason
+    /// to fall back: silently ignoring a catalogue someone deliberately
+    /// placed would hide their mistake until download time.
+    pub fn load_or_embedded(path: &Path) -> Result<Self> {
+        if path.is_file() {
+            Self::from_file(path)
+        } else {
+            Self::embedded()
+        }
+    }
+
+    /// Look a model up by id.
+    pub fn find(&self, id: &str) -> Option<&ModelSpec> {
+        self.models.iter().find(|spec| spec.id == id)
+    }
+
+    /// Every model id, in file order.
+    pub fn ids(&self) -> impl Iterator<Item = &str> {
+        self.models.iter().map(|spec| spec.id.as_str())
+    }
+
+    /// Reject a catalogue that would fail confusingly later.
+    fn validate(&self) -> Result<()> {
+        if self.version != SUPPORTED_VERSION {
+            return Err(Error::new(
+                ErrorKind::Registry,
+                format!(
+                    "catalogue version {} is not supported by this build (expects {SUPPORTED_VERSION})",
+                    self.version
+                ),
+            ));
+        }
+
+        let mut seen = HashSet::new();
+        for model in &self.models {
+            if !seen.insert(model.id.as_str()) {
+                return Err(Error::new(
+                    ErrorKind::Registry,
+                    format!("catalogue lists '{}' twice", model.id),
+                ));
+            }
+
+            // Both of these would otherwise surface as a model that can never
+            // be fetched, which is a worse failure than a refusal to start.
+            if model.files.is_empty() {
+                return Err(Error::new(
+                    ErrorKind::Registry,
+                    format!("'{}' lists no files", model.id),
+                ));
+            }
+            if model.mirrors.is_empty() {
+                return Err(Error::new(
+                    ErrorKind::Registry,
+                    format!("'{}' lists no mirrors", model.id),
+                ));
+            }
+
+            let mut locals = HashSet::new();
+            for file in &model.files {
+                if !locals.insert(file.local.as_str()) {
+                    return Err(Error::new(
+                        ErrorKind::Registry,
+                        format!("'{}' uses '{}' for two files", model.id, file.local),
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_embedded_catalogue_parses() {
+        let catalog = Catalog::embedded().expect("the shipped catalogue must be valid");
+        assert_eq!(catalog.version, SUPPORTED_VERSION);
+        assert!(catalog.find("sensevoice").is_some());
+        assert!(catalog.find("silero-vad").is_some());
+    }
+
+    #[test]
+    fn every_embedded_model_has_a_mirror_and_a_file() {
+        let catalog = Catalog::embedded().unwrap();
+        for model in &catalog.models {
+            assert!(!model.mirrors.is_empty(), "{} has no mirrors", model.id);
+            assert!(!model.files.is_empty(), "{} has no files", model.id);
+        }
+    }
+
+    #[test]
+    fn urls_join_without_doubling_slashes() {
+        let mirror = Mirror {
+            name: "test".into(),
+            base_url: "https://example.com/".into(),
+            repo: "/owner/repo/resolve/main".into(),
+        };
+        assert_eq!(
+            mirror.url_for("model.onnx"),
+            "https://example.com/owner/repo/resolve/main/model.onnx"
+        );
+    }
+
+    #[test]
+    fn a_newer_format_is_refused_rather_than_half_read() {
+        let text = r#"{"version": 99, "models": []}"#;
+        let err = Catalog::from_json(text).expect_err("must be refused");
+        assert!(err.message().contains("99"), "got: {}", err.message());
+    }
+
+    #[test]
+    fn duplicate_ids_are_refused() {
+        let text = r#"{
+            "version": 1,
+            "models": [
+                {"id":"a","display_name":"A","files":[{"remote":"f","local":"f"}],
+                 "mirrors":[{"name":"m","base_url":"https://x","repo":"r"}]},
+                {"id":"a","display_name":"A again","files":[{"remote":"f","local":"f"}],
+                 "mirrors":[{"name":"m","base_url":"https://x","repo":"r"}]}
+            ]
+        }"#;
+        let err = Catalog::from_json(text).expect_err("must be refused");
+        assert!(err.message().contains("twice"), "got: {}", err.message());
+    }
+
+    #[test]
+    fn a_model_with_no_mirrors_is_refused() {
+        let text = r#"{
+            "version": 1,
+            "models": [{"id":"a","display_name":"A","files":[{"remote":"f","local":"f"}],"mirrors":[]}]
+        }"#;
+        let err = Catalog::from_json(text).expect_err("must be refused");
+        assert!(
+            err.message().contains("no mirrors"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn a_missing_size_is_allowed_and_reads_as_unknown() {
+        let text = r#"{
+            "version": 1,
+            "models": [{"id":"a","display_name":"A","files":[{"remote":"f.bin","local":"f.bin"}],
+                        "mirrors":[{"name":"m","base_url":"https://x","repo":"r"}]}]
+        }"#;
+        let catalog = Catalog::from_json(text).expect("size is optional");
+        assert_eq!(catalog.find("a").unwrap().files[0].size, None);
+    }
+
+    #[test]
+    fn malformed_json_names_the_problem() {
+        let err = Catalog::from_json("{ not json }").expect_err("must fail");
+        assert!(
+            err.message().contains("not valid JSON"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn a_file_that_exists_but_does_not_parse_is_an_error_not_a_fallback() {
+        let path = std::env::temp_dir().join("verse-catalog-broken.json");
+        std::fs::write(&path, "{ nope }").unwrap();
+
+        let err = Catalog::load_or_embedded(&path)
+            .expect_err("a deliberate file must not be silently ignored");
+        assert!(
+            err.message().contains("verse-catalog-broken.json"),
+            "got: {}",
+            err.message()
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_missing_file_falls_back_to_the_embedded_copy() {
+        let path = std::env::temp_dir().join("verse-catalog-does-not-exist.json");
+        let _ = std::fs::remove_file(&path);
+
+        let catalog = Catalog::load_or_embedded(&path).expect("falls back");
+        assert!(catalog.find("sensevoice").is_some());
+    }
+}

@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "id": "sensevoice",
+      "display_name": "SenseVoice-Small (zh, en, yue, ja, ko)",
+      "files": [
+        { "remote": "model.int8.onnx", "local": "model.int8.onnx", "size": 239233841 },
+        { "remote": "tokens.txt", "local": "tokens.txt", "size": 315894 }
+      ],
+      "mirrors": [
+        {
+          "name": "hf-mirror",
+          "base_url": "https://hf-mirror.com",
+          "repo": "csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main"
+        },
+        {
+          "name": "huggingface",
+          "base_url": "https://huggingface.co",
+          "repo": "csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main"
+        }
+      ]
+    },
+    {
+      "id": "paraformer",
+      "display_name": "Paraformer-large (Chinese, English)",
+      "files": [
+        { "remote": "model.int8.onnx", "local": "model.int8.onnx", "size": 227330205 },
+        { "remote": "tokens.txt", "local": "tokens.txt", "size": 75354 }
+      ],
+      "mirrors": [
+        {
+          "name": "hf-mirror",
+          "base_url": "https://hf-mirror.com",
+          "repo": "csukuangfj/sherpa-onnx-paraformer-zh-2024-03-09/resolve/main"
+        },
+        {
+          "name": "huggingface",
+          "base_url": "https://huggingface.co",
+          "repo": "csukuangfj/sherpa-onnx-paraformer-zh-2024-03-09/resolve/main"
+        }
+      ]
+    },
+    {
+      "id": "punctuation",
+      "display_name": "CT-Transformer punctuation (zh, en)",
+      "files": [
+        { "remote": "model.onnx", "local": "model.onnx", "size": 294372519 }
+      ],
+      "mirrors": [
+        {
+          "name": "hf-mirror",
+          "base_url": "https://hf-mirror.com",
+          "repo": "csukuangfj/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12/resolve/main"
+        },
+        {
+          "name": "huggingface",
+          "base_url": "https://huggingface.co",
+          "repo": "csukuangfj/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12/resolve/main"
+        }
+      ]
+    },
+    {
+      "id": "silero-vad",
+      "display_name": "Silero VAD",
+      "files": [
+        { "remote": "model.onnx", "local": "silero_vad.onnx", "size": 2327524 }
+      ],
+      "mirrors": [
+        {
+          "name": "modelscope",
+          "base_url": "https://www.modelscope.cn",
+          "repo": "models/xiaowangge/sherpa-onnx-sense-voice-small/resolve/master/silero-vad"
+        },
+        {
+          "name": "hf-mirror",
+          "base_url": "https://hf-mirror.com",
+          "repo": "csukuangfj/sherpa-onnx-vad-silero-v5-2023-12-25/resolve/main"
+        }
+      ]
+    }
+  ]
+}

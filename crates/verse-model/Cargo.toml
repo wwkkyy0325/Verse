@@ -7,4 +7,7 @@ license.workspace = true
 description = "Model catalogue and multi-source downloader for Verse"
 
 [dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+ureq = "3.2.1"
 verse-core.workspace = true
