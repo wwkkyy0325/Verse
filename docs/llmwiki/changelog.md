@@ -925,3 +925,117 @@ and all nine commands are registered, the frontend type-checks against them,
 the bundle builds, and the window opens with an empty log. **But "the button
 works" is a claim that needs a person at the window**, and step 4 of
 `tasks/p1b-screens.md` is left open for exactly that.
+
+## 2026-10-06 — The licence texts, now that GitHub answers
+
+`THIRD_PARTY_NOTICES.md` has carried a release checklist since it was written.
+The previous round closed the attribution item in the interface and left the
+rest, for a stated reason: the licence file beside the model on hf-mirror is 71
+bytes reading "Ref to https://github.com/modelscope/FunASR", and it points at a
+host that does not answer from mainland China.
+
+A proxy is up and `github.com` answers in 0.87 s. The texts were fetched, and
+the blocker is gone rather than worked around.
+
+### What was archived
+
+Three texts, not one, because two more were sitting in the notices file marked
+"not yet verified" and can now stop being:
+
+| file | upstream | SHA-256 (first 16) |
+|---|---|---|
+| `FunASR-Model-License-1.1.txt` | `modelscope/FunASR` `MODEL_LICENSE` | `7dba975a2069691d` |
+| `Silero-VAD-MIT.txt` | `snakers4/silero-vad` `LICENSE` | `2e63e9a38b6e8fc0` |
+| `sherpa-onnx-Apache-2.0.txt` | `k2-fsa/sherpa-onnx` `LICENSE` | `cfc7749b96f63bd3` |
+
+Copied rather than linked, for a reason the agreement itself gives. §6: "This
+agreement may be updated and revised occasionally... and will take effect
+automatically." A link records nothing — it shows whatever the agreement says
+next time someone follows it. The copy with its hash is the evidence of the
+terms accepted. `licences/README.md` carries the upstream commit, the fetch
+date and the full hash for each.
+
+**Two traps in the fetching, both recorded in the file.** The FunASR repository
+serves two licences and only one is ours: `LICENSE` at the root is MIT and
+covers the *code*, `MODEL_LICENSE` is the custom agreement and covers the
+*weights*. We use the weights. Fetching the obvious URL would have archived the
+wrong document. And Silero VAD's README renders a badge labelled "CC BY-NC 4.0"
+that links to an MIT `LICENSE` — the file is MIT and the README says so in
+prose ("Published under permissive license (MIT) Silero VAD has zero strings
+attached"), and the badge is stale. Anyone re-verifying this should expect the
+badge to look alarming and should not act on it without reading the file.
+
+### "Ship the licence" now means the installer
+
+`tauri.conf.json` declared `bundle.targets` and no `bundle.resources`. A licence
+file in the repository is shipped to *us*; nothing beyond the binary reached the
+`.msi`. All four files are now listed by name — not by glob, because a glob that
+silently matches nothing is the failure this project keeps having — and the
+build puts them in `$RESOURCES/licences/`.
+
+### Checklist, corrected rather than ticked
+
+The attribution and name-retention items close. So does Silero. The licence-text
+item was **split in two**, and this is the part worth keeping: *the text ships*
+is done; *the text corresponds to the model revision used* is not, because
+`models.json` fetches every file through `.../resolve/main/`. One done thing and
+one undone thing were wearing the same line.
+
+Revision pinning is left open with its reason written down: it needs a revision
+per mirror — HuggingFace takes a commit SHA in `resolve/<sha>/`, ModelScope's
+revision semantics are its own — and a downloader that can express one.
+
+The 关于 dialog no longer says the text is 尚未内置. The test that asserted that
+sentence was changed with it, which is the point: a test pinning a stale claim
+pins the wrong thing.
+
+## 2026-10-06 — A correction to a recorded measurement
+
+The agent-CLI round recorded that `silero-vad`'s hf-mirror entry was "dead —
+404". With the proxy up, every mirror in `models.json` was re-probed. The entry
+is dead, but the code was wrong, and so was the reason.
+
+**The old probe used the wrong filename.** It requested
+`.../resolve/main/silero_vad.onnx` — the *local* name the catalogue writes the
+file to — where the catalogue's `remote` path is `model.onnx`. A 404 for a file
+that was never going to be there.
+
+**The real answer is 401, on the mirror and upstream alike.**
+`csukuangfj/sherpa-onnx-vad-silero-v5-2023-12-25` answers 401 for both
+filenames from `hf-mirror.com` and from `huggingface.co`, which is a repo that
+no longer resolves rather than a mirror that is down. The rest of the list is
+healthy: 11 of 12 URLs return 206, and the control URL — a sense-voice file on
+the same mirror — returns 206 as well, so the instrument was validated before
+its readings were believed.
+
+Still not fixed, and still harmless only because modelscope is listed first for
+that model. The conclusion stands; what changed is the evidence under it, and
+the earlier entry above is left as it was written.
+
+## 2026-10-06 — The installer that had never been built
+
+Wiring `bundle.resources` so the licence texts reach the installer turned up
+something larger behind it: **this project had never produced an installer.**
+
+The first `tauri build` failed with `Couldn't find a .ico icon`. The icon set
+was already committed — `crates/verse-app/icons/` holds a complete Tauri set
+including `icon.ico` — but `bundle.icon` was never added to `tauri.conf.json`,
+so nothing referenced it. Present at HEAD, unused since it was added.
+
+With the icon wired up, both bundles build: `Verse_0.1.0_x64_en-US.msi` at
+10.55 MiB and `Verse_0.1.0_x64-setup.exe` at 7.43 MiB.
+
+**Verified by reading what the bundler wrote, not by trusting the config.** The
+generated `target/release/wix/x64/main.wxs` carries a `licences` directory with
+all four files and their real source paths; `target/release/nsis/x64/
+installer.nsi` agrees and deletes them again on uninstall. The staged copies
+hash-match the archived originals, so what reaches a user is what was fetched.
+
+What is *not* proven: that the installer runs. It was built, not installed.
+
+**One process note, recorded because it cost a cycle.** The first build was
+launched from `crates/verse-app/ui`, where the CLI cannot find
+`tauri.conf.json`, and it panicked — but the command ended `| tail`, so the
+shell reported **exit 0** and the failure stayed invisible until the log was
+read. A non-zero exit is not the only way a command can fail to do its job;
+piping to a formatter discards the status that would have said so.

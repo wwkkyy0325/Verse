@@ -64,6 +64,15 @@ today only because modelscope is listed first and answers `302`. Not fixed
 here; recorded because a failover list with a permanently dead entry is a
 failover that has never been tested.
 
+> **Corrected 2026-10-06.** The `404` was my instrument, not the host. The probe
+> requested `silero_vad.onnx` — the *local* name — where the catalogue's
+> `remote` for that file is `model.onnx`, so it asked for a file that was never
+> there. Re-probed with the right path, the entry answers **`401`**, and so does
+> upstream `huggingface.co`: the repo `csukuangfj/sherpa-onnx-vad-silero-v5-
+> 2023-12-25` no longer resolves, which is a different thing from a mirror that
+> is down. The conclusion is unchanged; the reason under it was wrong. See the
+> changelog entry of the same date.
+
 `qwen3-asr`'s single mirror (hf-mirror, third-party upload) answers `302`, so
 the on-demand path is viable.
 
