@@ -26,12 +26,20 @@ export interface HardwareSummary {
 /** What the user can do about a failure. Mirrors `RecoveryView`. */
 export type Recovery = "retry" | "getModel" | "pickAnotherFile";
 
+/** How a model download is going. Mirrors `DownloadView`. */
+export type Download =
+  | { state: "idle" }
+  | { state: "fetching"; file: string; receivedBytes: number; totalBytes: number | null }
+  | { state: "verifying" }
+  | { state: "ready" }
+  | { state: "failed"; reason: string };
+
 /** Which screen is showing. Mirrors `ScreenView`. */
 export type Screen =
   | { kind: "empty" }
-  | { kind: "needsModel"; file: string; model: string }
+  | { kind: "needsModel"; file: string; model: string; download: Download }
   | { kind: "working"; file: string; stopping: boolean }
-  | { kind: "done"; file: string }
+  | { kind: "done"; file: string; exported: string | null }
   | { kind: "failed"; file: string; reason: string; recovery: Recovery };
 
 /** One segment of recognised speech. */
@@ -46,6 +54,7 @@ export type Update =
   | { kind: "screen"; screen: Screen }
   | { kind: "segment"; startMs: number; endMs: number; text: string }
   | { kind: "progress"; elapsedMs: number }
+  | { kind: "download"; download: Download }
   | { kind: "cleared" };
 
 const UPDATE_EVENT = "verse://update";
@@ -70,6 +79,34 @@ export function cancel(): Promise<void> {
 /** Leave a finished or failed screen, back to the drop target. */
 export function reset(): Promise<void> {
   return invoke<void>("reset");
+}
+
+/** Write the finished transcript out, in the format the extension names. */
+export function exportTranscript(path: string): Promise<void> {
+  return invoke<void>("export", { path });
+}
+
+/** Fetch the model the waiting file needs. Progress arrives as an update. */
+export function fetchModel(): Promise<void> {
+  return invoke<void>("fetch_model");
+}
+
+/** Use a model the user already has, copied in from wherever it is. */
+export function importModel(path: string): Promise<void> {
+  return invoke<void>("import_model", { path });
+}
+
+/** What the 关于 dialog shows: attribution and licence. Mirrors `About`. */
+export interface About {
+  name: string;
+  version: string;
+  summary: string;
+  attributions: { what: string; who: string }[];
+  licenceNote: string;
+}
+
+export function about(): Promise<About> {
+  return invoke<About>("about");
 }
 
 export function onUpdate(handler: (update: Update) => void): Promise<UnlistenFn> {

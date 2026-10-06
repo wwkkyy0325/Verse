@@ -274,11 +274,11 @@ impl AppState {
         }
     }
 
-    /// The user pointed at a folder that already holds the model.
+    /// A model has arrived, by download or by hand.
     ///
-    /// The caller has already checked the folder; this starts the job that
-    /// was waiting on it.
-    pub fn model_imported(&mut self) -> Effect {
+    /// The caller has already put it in place; this starts the job that was
+    /// waiting on it.
+    pub fn model_ready(&mut self) -> Effect {
         let input = match &self.screen {
             Screen::NeedsModel { input, .. } => input.clone(),
             _ => return Effect::None,
@@ -309,6 +309,14 @@ impl AppState {
     pub fn reset(&mut self) {
         self.screen = Screen::Empty;
         self.job = None;
+    }
+
+    /// The finished transcript, if there is one to write out.
+    pub fn finished(&self) -> Option<&Done> {
+        match &self.screen {
+            Screen::Done(done) => Some(done),
+            _ => None,
+        }
     }
 
     /// Record where the transcript was written.
@@ -556,7 +564,7 @@ mod tests {
         state.file_chosen(input("a.wav"), false);
         state.download_changed(DownloadState::Ready);
 
-        assert_eq!(state.model_imported(), Effect::Transcribe(input("a.wav")));
+        assert_eq!(state.model_ready(), Effect::Transcribe(input("a.wav")));
         assert!(matches!(state.screen(), Screen::Working(_)));
     }
 
@@ -585,6 +593,30 @@ mod tests {
         // Not merely counted: the text is on screen before the job ends.
         assert!(matches!(state.screen(), Screen::Working(_)));
         assert_eq!(segments(&state).len(), 1);
+    }
+
+    #[test]
+    fn only_a_finished_screen_has_something_to_export() {
+        let mut state = working();
+        assert!(state.finished().is_none(), "nothing to export while working");
+
+        state.apply(&Event::TranscriptFinal {
+            job: JobId(1),
+            transcript: Transcript {
+                segments: vec![a_segment("开放时间")],
+                language: None,
+            },
+        });
+
+        let done = state.finished().expect("a finished transcript");
+        assert_eq!(done.transcript.segments.len(), 1);
+        assert!(done.exported.is_none(), "nothing has been written yet");
+
+        state.note_exported(PathBuf::from("/out/a.srt"));
+        assert_eq!(
+            state.finished().and_then(|d| d.exported.as_deref()),
+            Some(std::path::Path::new("/out/a.srt"))
+        );
     }
 
     #[test]

@@ -6,19 +6,33 @@
 -->
 <script lang="ts">
   import { onMount } from "svelte";
-  import { open } from "@tauri-apps/plugin-dialog";
+  import { open, save } from "@tauri-apps/plugin-dialog";
 
   import {
+    about,
     cancel,
     currentScreen,
+    exportTranscript,
+    fetchModel,
+    importModel,
     onFileDrop,
     onUpdate,
     reset,
     transcribe,
+    type About,
+    type Download,
     type Screen,
     type Segment,
   } from "$lib/api";
   import { Button } from "$lib/components/ui/button";
+  import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogHeader,
+    DialogTitle,
+  } from "$lib/components/ui/dialog";
+  import { Progress } from "$lib/components/ui/progress";
 
   let screen = $state<Screen>({ kind: "empty" });
   let segments = $state<Segment[]>([]);
@@ -26,6 +40,16 @@
 
   // Set while a file is over the window, so the drop target can say so.
   let dragging = $state(false);
+
+  // What the backend said when it refused something the user asked for — a
+  // folder that is not a model, or an export it could not write. Its own state
+  // rather than a failure screen, because the screen has not changed and only
+  // the sentence has. Shown on whichever screen raised it; an error that sets
+  // a variable nothing renders is a failure that looks like success.
+  let modelError = $state<string | null>(null);
+
+  let aboutOpen = $state(false);
+  let aboutContent = $state<About | null>(null);
 
   // The path of the file in hand. The backend reports file *names* — a full
   // path is usually too long to show and never what the user needs to read —
@@ -63,10 +87,19 @@
           case "progress":
             elapsedMs = update.elapsedMs;
             break;
+          case "download":
+            // The screen already carries the download, but it arrives rarely;
+            // this is the one that moves often enough to be worth its own
+            // message.
+            if (screen.kind === "needsModel") {
+              screen = { ...screen, download: update.download };
+            }
+            break;
           case "cleared":
             segments = [];
             elapsedMs = 0;
             following = true;
+            modelError = null;
             break;
         }
       });
@@ -151,6 +184,68 @@
     if (typeof chosen === "string") await start(chosen);
   }
 
+  async function writeTranscript() {
+    modelError = null;
+
+    const suggested =
+      screen.kind === "done" ? screen.file.replace(/\.[^.]*$/, "") + ".srt" : "字幕.srt";
+
+    const chosen = await save({
+      defaultPath: suggested,
+      filters: [
+        { name: "SubRip 字幕", extensions: ["srt"] },
+        { name: "纯文本", extensions: ["txt"] },
+      ],
+    });
+    if (!chosen) return;
+
+    try {
+      await exportTranscript(chosen);
+    } catch (cause) {
+      // The backend says why — an extension it cannot render, or a directory
+      // it cannot write to — and repeating it verbatim is more use than a
+      // generic apology.
+      modelError = String(cause);
+    }
+  }
+
+  async function startDownload() {
+    modelError = null;
+    try {
+      await fetchModel();
+    } catch (cause) {
+      modelError = String(cause);
+    }
+  }
+
+  async function pickModelFolder() {
+    modelError = null;
+    const chosen = await open({ directory: true, multiple: false });
+    if (typeof chosen !== "string") return;
+
+    try {
+      await importModel(chosen);
+    } catch (cause) {
+      modelError = String(cause);
+    }
+  }
+
+  async function showAbout() {
+    aboutContent = await about();
+    aboutOpen = true;
+  }
+
+  /// How far along a download is, as a whole percent, when that is knowable.
+  function percent(download: Download): number | null {
+    if (download.state !== "fetching") return null;
+    if (!download.totalBytes) return null;
+    return Math.round((download.receivedBytes / download.totalBytes) * 100);
+  }
+
+  function megabytes(bytes: number): string {
+    return (bytes / 1_000_000).toFixed(0);
+  }
+
   function timecode(ms: number): string {
     const total = Math.floor(ms / 1000);
     const minutes = String(Math.floor(total / 60)).padStart(2, "0");
@@ -179,6 +274,7 @@
         {screen.stopping ? "正在停止…" : "取消"}
       </Button>
     {/if}
+    <Button variant="ghost" size="sm" onclick={() => void showAbout()}>关于</Button>
   </header>
 
   {#if screen.kind === "empty"}
@@ -224,7 +320,13 @@
         <span class="text-muted-foreground text-xs">
           完成 · 共 {segments.length} 段
         </span>
+        {#if modelError}
+          <span class="text-destructive text-xs">{modelError}</span>
+        {/if}
         <span class="flex-1"></span>
+        <Button size="sm" onclick={() => void writeTranscript()}>
+          {screen.exported ? "再导出一次" : "导出字幕"}
+        </Button>
         <Button variant="ghost" size="sm" onclick={() => void reset()}>再来一个</Button>
       </footer>
     {/if}
@@ -243,13 +345,69 @@
       </div>
     </div>
   {:else if screen.kind === "needsModel"}
-    <div class="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center">
+    <div class="flex flex-1 flex-col items-center justify-center gap-4 px-8 text-center">
       <p class="text-sm font-medium">还缺少识别模型</p>
       <p class="text-muted-foreground max-w-md text-sm leading-relaxed">
-        需要先下载 <span class="font-medium">{screen.model}</span>，之后才能转写。
+        需要先准备 <span class="font-medium">{screen.model}</span>，之后才能转写。
+        下载好之后会自动开始，不用再点一次。
       </p>
       <p class="text-muted-foreground/70 text-xs">{screen.file}</p>
-      <Button class="mt-2" variant="ghost" onclick={() => void reset()}>返回</Button>
+
+      {#if screen.download.state === "fetching"}
+        <div class="w-72 space-y-2">
+          <Progress value={percent(screen.download) ?? 0} />
+          <p class="text-muted-foreground text-xs">
+            {megabytes(screen.download.receivedBytes)} MB
+            {#if screen.download.totalBytes}
+              / {megabytes(screen.download.totalBytes)} MB · {percent(screen.download)}%
+            {/if}
+          </p>
+        </div>
+      {:else if screen.download.state === "verifying"}
+        <p class="text-muted-foreground text-xs">正在校验…</p>
+      {:else if screen.download.state === "failed"}
+        <p class="text-destructive max-w-md text-xs leading-relaxed">
+          {screen.download.reason}
+        </p>
+        <Button onclick={() => void startDownload()}>再试一次</Button>
+      {:else}
+        <div class="flex gap-2">
+          <Button onclick={() => void startDownload()}>下载模型</Button>
+          <Button variant="ghost" onclick={() => void pickModelFolder()}>
+            我已有模型文件夹
+          </Button>
+        </div>
+      {/if}
+
+      {#if modelError}
+        <p class="text-destructive max-w-md text-xs leading-relaxed">{modelError}</p>
+      {/if}
+
+      <Button variant="ghost" size="sm" onclick={() => void reset()}>返回</Button>
     </div>
   {/if}
+
+  <Dialog bind:open={aboutOpen}>
+    <DialogContent class="sm:max-w-md">
+      <DialogHeader>
+        <DialogTitle>
+          {aboutContent?.name ?? "Verse"} {aboutContent?.version ?? ""}
+        </DialogTitle>
+        <DialogDescription>{aboutContent?.summary ?? ""}</DialogDescription>
+      </DialogHeader>
+
+      <dl class="space-y-2">
+        {#each aboutContent?.attributions ?? [] as row}
+          <div class="flex gap-3 text-xs">
+            <dt class="text-muted-foreground w-24 shrink-0">{row.what}</dt>
+            <dd>{row.who}</dd>
+          </div>
+        {/each}
+      </dl>
+
+      <p class="text-muted-foreground text-xs leading-relaxed">
+        {aboutContent?.licenceNote ?? ""}
+      </p>
+    </DialogContent>
+  </Dialog>
 </div>

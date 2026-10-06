@@ -101,6 +101,53 @@ pub enum Update {
     Progress { elapsed_ms: u64 },
     /// A new job is starting; drop everything from the previous one.
     Cleared,
+    /// A model download moved. Sent often, so it carries only the download
+    /// and not the whole screen.
+    Download { download: DownloadView },
+}
+
+/// How a model download is going, in the form the window reads.
+///
+/// Bytes rather than a bare "downloading": a progress bar needs a number, and
+/// a state with nothing in it leaves the window spinning.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum DownloadView {
+    Idle,
+    Fetching {
+        file: String,
+        received_bytes: u64,
+        /// `null` when the host did not say how large the file is.
+        total_bytes: Option<u64>,
+    },
+    Verifying,
+    Ready,
+    Failed { reason: String },
+}
+
+impl From<&verse_model::DownloadState> for DownloadView {
+    fn from(state: &verse_model::DownloadState) -> Self {
+        use verse_model::DownloadState;
+
+        match state {
+            DownloadState::Idle => DownloadView::Idle,
+            DownloadState::Fetching {
+                file,
+                received,
+                total,
+                ..
+            } => DownloadView::Fetching {
+                file: file.clone(),
+                received_bytes: *received,
+                total_bytes: *total,
+            },
+            DownloadState::Verifying => DownloadView::Verifying,
+            DownloadState::Ready => DownloadView::Ready,
+            DownloadState::Failed { reason } => DownloadView::Failed {
+                reason: reason.clone(),
+            },
+        }
+    }
 }
 
 /// Which screen, and what it needs to say.
@@ -115,6 +162,7 @@ pub enum ScreenView {
     NeedsModel {
         file: String,
         model: String,
+        download: DownloadView,
     },
     Working {
         file: String,
@@ -123,6 +171,9 @@ pub enum ScreenView {
     },
     Done {
         file: String,
+        /// Where the transcript was written, once it has been. The window uses
+        /// it to stop offering an export that has already happened.
+        exported: Option<String>,
     },
     Failed {
         file: String,
@@ -159,9 +210,14 @@ fn file_label(path: &std::path::Path) -> String {
 pub fn view_of(screen: &Screen) -> ScreenView {
     match screen {
         Screen::Empty => ScreenView::Empty,
-        Screen::NeedsModel { input, model, .. } => ScreenView::NeedsModel {
+        Screen::NeedsModel {
+            input,
+            model,
+            download,
+        } => ScreenView::NeedsModel {
             file: file_label(input),
             model: model.clone(),
+            download: download.into(),
         },
         Screen::Working(working) => ScreenView::Working {
             file: file_label(&working.input),
@@ -169,6 +225,7 @@ pub fn view_of(screen: &Screen) -> ScreenView {
         },
         Screen::Done(done) => ScreenView::Done {
             file: file_label(&done.input),
+            exported: done.exported.as_ref().map(|path| file_label(path)),
         },
         Screen::Failed(failed) => ScreenView::Failed {
             file: file_label(&failed.input),
@@ -380,6 +437,34 @@ mod tests {
             value,
             json!({ "kind": "segment", "startMs": 1500, "endMs": 3200, "text": "开放时间" })
         );
+    }
+
+    #[test]
+    fn a_done_screen_reports_whether_it_has_been_written_out() {
+        // The window uses this to stop offering an export that has already
+        // happened, so `null` and a path have to be distinguishable.
+        let unsaved = serde_json::to_value(Update::Screen {
+            screen: ScreenView::Done {
+                file: "会议.m4a".to_string(),
+                exported: None,
+            },
+        })
+        .expect("serializes");
+
+        assert_eq!(
+            unsaved,
+            json!({ "kind": "screen", "screen": { "kind": "done", "file": "会议.m4a", "exported": null } })
+        );
+
+        let saved = serde_json::to_value(Update::Screen {
+            screen: ScreenView::Done {
+                file: "会议.m4a".to_string(),
+                exported: Some("会议.srt".to_string()),
+            },
+        })
+        .expect("serializes");
+
+        assert_eq!(saved["screen"]["exported"], json!("会议.srt"));
     }
 
     #[test]
