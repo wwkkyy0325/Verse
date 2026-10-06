@@ -124,11 +124,22 @@ pub fn engine_accepts_hotwords(engine: &str) -> bool {
         .is_some_and(|descriptor| descriptor.supports_hotwords)
 }
 
+/// How many threads this request will actually run with.
+///
+/// A caller leaving `threads` unset gets cores − 1. Exposed because two places
+/// now need the answer — loading an engine, and deciding whether an engine
+/// already loaded is still the right one — and two rules for it would eventually
+/// disagree.
+pub fn effective_threads(request: &Request) -> usize {
+    request
+        .threads
+        .unwrap_or_else(|| HardwareProfile::probe().engine_threads())
+}
+
 impl Transcriber {
     /// Load the engine named by `request`.
     pub fn load(request: Request) -> Result<Self, Error> {
-        let hardware = HardwareProfile::probe();
-        let threads = request.threads.unwrap_or_else(|| hardware.engine_threads());
+        let threads = effective_threads(&request);
 
         let mut registry = Registry::new();
         register_builtin_engines(&mut registry);
@@ -157,6 +168,16 @@ impl Transcriber {
             engine,
             settings,
         })
+    }
+
+    /// The identity of the configuration this engine was built from.
+    ///
+    /// Exactly what the cache keys on, and for the same reason: two runs that
+    /// produce this same string would build the same engine and read the same
+    /// run-scoped settings. `crate::keep` compares it to decide whether a
+    /// loaded model can be reused.
+    pub fn settings(&self) -> &str {
+        &self.settings
     }
 
     /// Transcribe the file named by the request, publishing progress as it

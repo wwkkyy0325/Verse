@@ -230,6 +230,33 @@ mod tests {
     }
 
     #[test]
+    fn the_settings_digest_has_not_changed_since_the_cache_was_designed() {
+        // A pin, not a property. Changing what goes into the digest silently
+        // invalidates every cached transcription and every resume checkpoint on
+        // every machine — which is a legitimate thing to do, but never a thing
+        // to do by accident while refactoring something else.
+        //
+        // Machine-independent on purpose: an empty model directory, a VAD model
+        // that is not there, an explicit thread count so the hardware probe is
+        // not consulted, and an explicit ffmpeg string so no process is
+        // spawned. What remains is the shape of the fingerprint itself.
+        let dir = scratch("digest-pin");
+        let mut request = request(&dir);
+        request.threads = Some(4);
+        request.vad_model = dir.join("absent.onnx");
+
+        let digest = settings_digest(&request, 4, Some("ffmpeg version PINNED"));
+
+        assert_eq!(
+            digest, "b6001e1dd53d72d02300cc8811efcd1f848a119e6b4465360d1127a214ef749b",
+            "if this is the only failure, the digest changed. Update the literal only \
+             if that was intended, and bump SEMANTICS so old entries are ignored."
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn the_same_request_gives_the_same_digest() {
         let dir = scratch("cache-digest-stable");
         let request = request(&dir);
