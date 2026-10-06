@@ -61,13 +61,17 @@ pub const ATTRIBUTIONS: &[Attribution] = &[
 
 /// Said out loud rather than implied.
 ///
-/// The licence requires the agreement's text to ship alongside the model. It
-/// does not, and cannot be fetched from here: the file beside the model on
-/// hf-mirror is a one-line pointer to GitHub, which is unreachable from
-/// mainland China. `THIRD_PARTY_NOTICES.md` carries the checklist item for
-/// whoever prepares a release.
-pub const LICENCE_NOTE: &str = "模型权重不随安装包分发，由你自己下载后保存在本机。\
-许可证全文需要随分发附带，当前版本尚未内置，详见 THIRD_PARTY_NOTICES.md。";
+/// The agreement requires its own text to ship with the product, and it does:
+/// `licences/` holds all three verbatim, and `tauri.conf.json` lists them under
+/// `bundle.resources` so they reach the installer rather than only the
+/// repository. §6 lets the agreement be revised unilaterally, so the archived
+/// copy with its SHA-256 is the evidence of the terms we accepted.
+///
+/// What still does not ship is the weights. They are fetched on demand, and
+/// that difference is worth stating because "the licence is included" reads
+/// like "the model is included".
+pub const LICENCE_NOTE: &str = "模型权重不随安装包分发，由你自己下载后保存在本机；\
+识别全部在本机完成。许可证全文随安装包附带，见安装目录下的 licences 文件夹。";
 
 pub fn about() -> About {
     About {
@@ -119,10 +123,16 @@ mod tests {
     }
 
     #[test]
-    fn the_licence_note_says_the_text_is_missing() {
-        // The obligation is to ship it. Claiming otherwise in the interface
-        // would be worse than the gap.
-        assert!(about().licence_note.contains("尚未内置"));
+    fn the_licence_note_says_where_the_text_is() {
+        // It used to say the text was 尚未内置, which was true and is not any
+        // more. The note points at the directory the installer puts it in, and
+        // it does not claim the agreement is absent.
+        let note = about().licence_note;
+        assert!(note.contains("licences"), "the note names where the text is");
+        assert!(
+            !note.contains("尚未内置"),
+            "the text ships now; saying otherwise is a stale claim"
+        );
     }
 
     #[test]

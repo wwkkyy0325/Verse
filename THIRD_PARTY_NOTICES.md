@@ -7,6 +7,10 @@ The distinction that matters: some components are *linked or invoked* (code),
 others are *downloaded as data* (model weights). Licenses often differ between
 the two, even for the same project.
 
+The texts themselves are archived verbatim in [`licences/`](licences/), with
+the upstream commit, the fetch date and the SHA-256 of each. This file says what
+each one requires; that directory is the paperwork.
+
 ---
 
 ## Bundled or downloaded at runtime
@@ -28,7 +32,9 @@ What it requires of us:
 2. **Retain the model name.** "SenseVoiceSmall" must remain in the distributed
    metadata; do not strip or rename it.
 3. **Ship the license text.** Include this agreement, or a NOTICE pointing to
-   it, with the product.
+   it, with the product. **Done**: `licences/FunASR-Model-License-1.1.txt`,
+   listed in `crates/verse-app/tauri.conf.json` under `bundle.resources` so it
+   reaches the installer rather than only the repository.
 4. **Do not disparage the project.** Section 4.2 terminates the license
    automatically on "unjustified denigration, malicious smearing, or baseless
    insults".
@@ -49,14 +55,24 @@ Upstream: <https://github.com/modelscope/FunASR/blob/main/MODEL_LICENSE>
 
 ### Silero VAD — model weights
 
-License status **not yet verified**. Confirm before shipping. Upstream is
-<https://github.com/snakers4/silero-vad>.
+**MIT**, `Copyright (c) 2020-present Silero Team`. Verified against the upstream
+licence file and archived as `licences/Silero-VAD-MIT.txt`.
+
+**Read the file, not the badge.** The README in `snakers4/silero-vad` renders a
+badge labelled "CC BY-NC 4.0" while linking to the MIT `LICENSE`. The licence
+file is MIT and the README says so in prose — "Published under permissive
+license (MIT) Silero VAD has zero strings attached — no telemetry, no keys, no
+registration, no built-in expiration, no keys or vendor lock" — so the badge is
+stale. Anyone re-verifying this should expect the badge to look alarming.
+
+Upstream: <https://github.com/snakers4/silero-vad>
 
 ### sherpa-onnx — library
 
-**Apache-2.0** for the toolkit. Note this covers the *code*; the model weights
-it hosts carry their own licenses, which is the entire point of the SenseVoice
-entry above.
+**Apache-2.0** for the toolkit, archived as
+`licences/sherpa-onnx-Apache-2.0.txt`. Note this covers the *code*; the model
+weights it hosts carry their own licenses, which is the entire point of the
+SenseVoice entry above.
 
 Upstream: <https://github.com/k2-fsa/sherpa-onnx>
 
@@ -142,9 +158,24 @@ These are used to build and test, and are not distributed with the product:
 
 ## Checklist for a release
 
-- [ ] Attribution to Alibaba / FunAudioLLM present in the UI or docs
-- [ ] "SenseVoiceSmall" name retained in distributed metadata
-- [ ] FunASR Model License v1.1 text shipped, pinned to the model revision used
-- [ ] Silero VAD license verified
+- [x] Attribution to Alibaba / FunAudioLLM present in the UI or docs
+      — the 关于 dialog; `crates/verse-app/src/about.rs`
+- [x] "SenseVoiceSmall" name retained in distributed metadata
+      — `models.json` and the engine descriptor carry "SenseVoice-Small",
+      which is upstream's own prose spelling (the model card writes both, and
+      its `model_dir` is `FunAudioLLM/SenseVoiceSmall`). The name is retained;
+      the hyphen is upstream's, not a tidying-up.
+- [x] FunASR Model License v1.1 text shipped — `licences/`, listed under
+      `bundle.resources`
+- [x] Silero VAD license verified — MIT
+- [ ] **FunASR Model License v1.1 text corresponds to the model revision
+      used.** The text is archived, but the weights it governs are fetched
+      through `.../resolve/main/`, so "the revision used" is whatever the host
+      served that day. Fixing this is the next item; splitting them keeps a
+      done thing from looking undone and an undone thing from looking done.
+- [ ] Model revisions pinned so the archived licenses still correspond.
+      `crates/verse-model/models.json` resolves every file through `/main/` or
+      `/master/`. Needs a revision per mirror — HuggingFace accepts a commit
+      SHA in `resolve/<sha>/`, ModelScope's revision semantics are its own —
+      and a downloader that can express one.
 - [ ] FFmpeg distribution strategy decided and its license honoured
-- [ ] Model revisions pinned so the archived licenses still correspond
