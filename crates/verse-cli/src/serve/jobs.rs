@@ -91,6 +91,30 @@ struct JobRecord {
     cancel: CancelToken,
 }
 
+impl Queue {
+    /// Drop the oldest finished jobs once too many are held.
+    ///
+    /// A job's result carries the whole transcript, which is the largest thing
+    /// this process accumulates and the only one that would otherwise grow with
+    /// uptime. A client that needs a long transcript kept should write it
+    /// somewhere; this is a component, not an archive.
+    ///
+    /// Ids ascend, so the front of the settled set is the oldest.
+    fn evict(&mut self) {
+        let settled: Vec<u64> = self
+            .records
+            .iter()
+            .filter(|(_, record)| record.state.is_settled())
+            .map(|(id, _)| *id)
+            .collect();
+
+        let excess = settled.len().saturating_sub(MAX_RETAINED);
+        for id in settled.into_iter().take(excess) {
+            self.records.remove(&id);
+        }
+    }
+}
+
 impl JobRecord {
     /// `origin` is when the service started, and every timestamp is measured
     /// from it — the same origin for all three, so they can be compared with
@@ -333,7 +357,13 @@ impl Jobs {
             let (input, format) = (record.input.clone(), record.format);
             record.result = Some(cancelled_result(&input, format));
 
-            return Ok(record.view(self.inner.origin));
+            state.evict();
+            let view = state
+                .records
+                .get(&id)
+                .expect("evicting keeps the newest, and this is it")
+                .view(self.inner.origin);
+            return Ok(view);
         }
 
         let record = state.records.get(&id).expect("just checked");
@@ -450,6 +480,7 @@ fn spawn_worker(inner: Arc<Inner>) {
                 }
             }
 
+            state.evict();
             inner.signal.notify_all();
         }
     });
@@ -741,6 +772,33 @@ mod tests {
             let _ = jobs.cancel(id);
         }
         let _ = jobs.cancel(running);
+    }
+
+    #[test]
+    fn finished_jobs_are_evicted_so_memory_does_not_grow_with_uptime() {
+        // The hard constraint for a long-running process, and the one thing
+        // here that would otherwise grow for ever: a result carries the whole
+        // transcript.
+        let jobs = a_jobs(instant("x"));
+        let mut ids = Vec::new();
+
+        for _ in 0..(MAX_RETAINED + 5) {
+            let id = jobs.submit(a_submission()).expect("accepted");
+            settled(&jobs, id);
+            ids.push(id);
+        }
+
+        assert_eq!(jobs.retained(), MAX_RETAINED, "pinned at the bound");
+
+        // The oldest are gone, the newest are not, and asking for a gone one
+        // says so with the bound named rather than looking like a typo.
+        assert!(jobs.get(ids[0]).is_none(), "the oldest should have gone");
+        assert!(jobs.get(*ids.last().expect("some")).is_some());
+
+        assert!(
+            crate::serve::router::unknown_job(ids[0]).contains(&MAX_RETAINED.to_string()),
+            "a client asking for an evicted job should be told the bound"
+        );
     }
 
     #[test]

@@ -72,7 +72,7 @@ fn job_id(path: &str) -> Option<u64> {
     rest.parse().ok()
 }
 
-fn unknown_job(id: u64) -> String {
+pub(super) fn unknown_job(id: u64) -> String {
     format!(
         "no job {id}. Finished jobs are kept for the most recent {}; \
          an evicted one reads the same as one that never existed.",

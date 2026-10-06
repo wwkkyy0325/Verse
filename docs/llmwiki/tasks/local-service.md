@@ -141,13 +141,37 @@ run three times to check.
 The transcript arriving as mojibake in one run was the console's cp936
 rendering, not the wire: over HTTP the text is exactly the expected Chinese.
 
-## [ ] 3. Progress, retention, connection cap
+## [x] 3. Progress, retention, connection cap
 
 One long-lived drain thread; FIFO eviction at `MAX_RETAINED`; the connection cap.
 
 **Verify:** `progress` rises during a job and carries **no** percentage;
 `MAX_RETAINED + 5` jobs leaves the count pinned, the oldest id `404` naming the
 bound; the 65th socket gets `503`.
+
+**Done.** Verified against a running service, 45 jobs in one session:
+
+```
+after 15 jobs: retained=32/32  uptime=15s
+after 30 jobs: retained=32/32  uptime=16s
+after 45 jobs: retained=32/32  uptime=16s
+the first job is now: 404, "Finished jobs are kept for the most recent 32;
+                      an evicted one reads the same as one that never existed."
+```
+
+The count is pinned while uptime grows, which is the shape of memory bounded by
+constants rather than by time. A unit test asserts the same without a socket.
+
+The connection cap, measured by sending a request on each of 71 sockets: 65
+served, six refused with `503`, and closing one made the next succeed
+immediately. Five served rather than exactly 64 because connections idle out
+during the loop — the cap counts *live* connections, and the guard that returns
+a slot is the same one that refuses.
+
+**A correction to my own first attempt at that test.** It opened 71 sockets and
+expected refusals, and got none: TCP accepts a connection long before the server
+sees it, so the cap can only be observed by *sending* something. The refusal is a
+response, not a refused handshake — worth knowing for anyone probing this.
 
 ## [ ] 4. Models, and both no-model paths made visible
 

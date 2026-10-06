@@ -162,6 +162,16 @@ pub fn run(config: Config) -> Result<(), String> {
         .map_err(|error| format!("could not read the bound address: {error}"))?
         .port();
 
+    // A previous run that was killed rather than closed can leave a half-written
+    // cache entry behind. Swept here rather than in the cache itself, because
+    // the cache is used by commands that finish and the litter only matters to
+    // the one thing that does not.
+    let data_dir = verse_store::data_dir(&verse_store::Roots::from_env());
+    let swept = verse_store::Cache::under(&data_dir).sweep_temporaries();
+    if swept > 0 {
+        eprintln!("cleared {swept} half-written cache files from a previous run");
+    }
+
     let bus = EventBus::new();
     let keeper = Arc::new(ModelKeeper::with_timeout(bus.clone(), config.idle));
 
