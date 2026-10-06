@@ -14,8 +14,10 @@ use verse_core::{AudioChunk, AudioFormat, Error, ErrorKind, Result, Segmenter};
 ///
 /// This is the hard ceiling on memory. A span is held resident while it is
 /// being recognized, so without a cap a few minutes of unbroken speech would
-/// defeat the point of segmenting at all.
-const MAX_SPAN_SECONDS: f32 = 20.0;
+/// defeat the point of segmenting at all. [`FixedBlocks`](crate::FixedBlocks),
+/// the fallback used when the detector is distrusted, cuts at the same
+/// interval for the same reason.
+pub const MAX_SPAN_SECONDS: f32 = 20.0;
 
 /// Audio prepended to each span, in seconds.
 ///

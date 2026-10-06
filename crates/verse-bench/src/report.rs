@@ -21,6 +21,15 @@ pub struct Scored {
     pub reference: String,
     pub hypothesis: String,
     pub score: cer::Score,
+    /// Fraction of the file's non-silent audio the segmenter passed on.
+    ///
+    /// `None` when the file held too little sound to judge. Recorded per
+    /// utterance rather than averaged on the way in, because the question
+    /// "which files did the segmenter drop" cannot be asked of a mean.
+    pub coverage: Option<f64>,
+    /// Whether the guard distrusted the segmenter and recognised the whole
+    /// file instead. Those utterances cost a second pass by design.
+    pub recovered: bool,
 }
 
 impl Scored {
@@ -75,16 +84,30 @@ impl Dataset {
     pub fn exact(&self) -> usize {
         self.results.iter().filter(|r| r.score.errors == 0).count()
     }
+
+    /// How many utterances the guard took a second pass over.
+    pub fn recovered(&self) -> usize {
+        self.results.iter().filter(|r| r.recovered).count()
+    }
+
+    /// Mean coverage across the utterances that could be judged.
+    pub fn mean_coverage(&self) -> Option<f64> {
+        let values: Vec<f64> = self.results.iter().filter_map(|r| r.coverage).collect();
+        if values.is_empty() {
+            return None;
+        }
+        Some(values.iter().sum::<f64>() / values.len() as f64)
+    }
 }
 
 /// The one-line-per-dataset table.
 pub fn summary(datasets: &[Dataset]) {
     println!();
     println!(
-        "{:<20} {:>6} {:>8} {:>8} {:>9} {:>8} {:>7}",
-        "dataset", "utter", "CER", "exact", "punct F1", "chars/seg", "time"
+        "{:<20} {:>6} {:>8} {:>8} {:>9} {:>8} {:>7} {:>7} {:>5}",
+        "dataset", "utter", "CER", "exact", "punct F1", "chars/seg", "time", "coverage", "recd"
     );
-    println!("{}", "-".repeat(72));
+    println!("{}", "-".repeat(86));
 
     for dataset in datasets {
         let punctuation = if dataset.scored_punctuation {
@@ -93,8 +116,13 @@ pub fn summary(datasets: &[Dataset]) {
             "—".to_string()
         };
 
+        let coverage = match dataset.mean_coverage() {
+            Some(value) => format!("{:.1}%", value * 100.0),
+            None => "—".to_string(),
+        };
+
         println!(
-            "{:<20} {:>6} {:>8} {:>8} {:>9} {:>8.1} {:>6.0}s",
+            "{:<20} {:>6} {:>8} {:>8} {:>9} {:>8.1} {:>6.0}s {:>7} {:>5}",
             dataset.name,
             dataset.results.len(),
             format!("{:.2}%", dataset.rate() * 100.0),
@@ -105,6 +133,8 @@ pub fn summary(datasets: &[Dataset]) {
             punctuation,
             dataset.mean_segment_chars(),
             dataset.elapsed_seconds,
+            coverage,
+            dataset.recovered(),
         );
     }
 }
@@ -123,6 +153,21 @@ pub fn detail(dataset: &Dataset, worst_shown: usize) {
         dataset.segments,
         dataset.mean_segment_chars()
     );
+
+    // How much of each file's non-silent audio reached the recogniser. A
+    // transcript that is short because the recording was short and one that is
+    // short because the audio was dropped are indistinguishable without this.
+    let coverages: Vec<f64> = dataset.results.iter().filter_map(|r| r.coverage).collect();
+    if !coverages.is_empty() {
+        let lowest = coverages.iter().cloned().fold(f64::INFINITY, f64::min);
+        println!(
+            "coverage        {:.1}% mean, {:.1}% lowest of {}",
+            dataset.mean_coverage().unwrap_or(0.0) * 100.0,
+            lowest * 100.0,
+            coverages.len(),
+        );
+    }
+    println!("recovered       {}", dataset.recovered());
     println!(
         "exact matches   {} ({:.1}%)",
         dataset.exact(),
@@ -213,13 +258,25 @@ pub fn punctuation_detail(dataset: &Dataset) {
 }
 
 /// Write every pair out, so a subset can be read without re-running.
+///
+/// `id / errors / reference / hypothesis / coverage / recovered`, where
+/// coverage is `-` when the file held too little sound to judge.
 pub fn dump(path: &std::path::Path, results: &[Scored]) -> std::io::Result<()> {
     let mut out = String::new();
     for item in results {
+        let coverage = match item.coverage {
+            Some(value) => format!("{value:.4}"),
+            None => "-".to_string(),
+        };
         writeln!(
             out,
-            "{}\t{}\t{}\t{}",
-            item.id, item.score.errors, item.reference, item.hypothesis
+            "{}\t{}\t{}\t{}\t{}\t{}",
+            item.id,
+            item.score.errors,
+            item.reference,
+            item.hypothesis,
+            coverage,
+            u8::from(item.recovered),
         )
         .ok();
     }

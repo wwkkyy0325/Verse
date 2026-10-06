@@ -159,6 +159,13 @@ pub enum Applied {
     Screen,
     /// One more segment was recognised and appended.
     Segment(Segment),
+    /// Everything recognised so far is void; the list starts again.
+    ///
+    /// The segmenter can be distrusted after it has already been believed, and
+    /// the segments it produced have been shown by then. Without this the
+    /// window would keep the discarded fragment and append the replacement to
+    /// it, displaying both.
+    Cleared,
     /// Progress moved within a screen that did not change.
     Progress {
         position: Duration,
@@ -361,6 +368,14 @@ impl AppState {
                 Screen::Working(working) => {
                     working.segments.push(segment.clone());
                     Applied::Segment(segment.clone())
+                }
+                _ => Applied::Nothing,
+            },
+
+            Event::TranscriptDiscarded { .. } => match &mut self.screen {
+                Screen::Working(working) => {
+                    working.segments.clear();
+                    Applied::Cleared
                 }
                 _ => Applied::Nothing,
             },
@@ -570,6 +585,46 @@ mod tests {
         // Not merely counted: the text is on screen before the job ends.
         assert!(matches!(state.screen(), Screen::Working(_)));
         assert_eq!(segments(&state).len(), 1);
+    }
+
+    #[test]
+    fn a_discarded_transcript_takes_its_segments_with_it() {
+        let mut state = working();
+        for text in ["逛集市了", "去逛集市了"] {
+            state.apply(&Event::TranscriptSegment {
+                job: JobId(1),
+                segment: a_segment(text),
+            });
+        }
+        assert_eq!(segments(&state).len(), 2);
+
+        let applied = state.apply(&Event::TranscriptDiscarded { job: JobId(1) });
+
+        assert_eq!(applied, Applied::Cleared);
+        assert!(segments(&state).is_empty());
+    }
+
+    #[test]
+    fn a_discarded_transcript_leaves_the_job_running() {
+        // Clearing must not look like a cancel: the replacement is on its way,
+        // and dropping the job id here would leave it unrecognised and unshown.
+        let mut state = working();
+        state.apply(&Event::TranscriptSegment {
+            job: JobId(1),
+            segment: a_segment("逛集市了"),
+        });
+
+        state.apply(&Event::TranscriptDiscarded { job: JobId(1) });
+
+        assert!(matches!(state.screen(), Screen::Working(_)));
+
+        // And the replacement still lands.
+        state.apply(&Event::TranscriptSegment {
+            job: JobId(1),
+            segment: a_segment("逛集市喽"),
+        });
+        assert_eq!(segments(&state).len(), 1);
+        assert_eq!(segments(&state)[0].text, "逛集市喽");
     }
 
     #[test]

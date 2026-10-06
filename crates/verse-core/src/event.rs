@@ -58,6 +58,16 @@ pub enum Event {
         job: JobId,
         transcript: Transcript,
     },
+    /// Segments already published for this job are void.
+    ///
+    /// The segmenter can be distrusted after the fact — it reports almost no
+    /// speech in a file that plainly contains some — and by then its spans
+    /// have already been recognised and shown. Everything published for this
+    /// job so far is about to be replaced, and a listener that does not act on
+    /// this will be left displaying the fragment that was discarded.
+    TranscriptDiscarded {
+        job: JobId,
+    },
 
     // ---- environment ----
     HardwareProbed {
@@ -80,7 +90,8 @@ impl Event {
             | Event::JobCancelled { id } => Some(*id),
             Event::TranscriptDelta { job, .. }
             | Event::TranscriptSegment { job, .. }
-            | Event::TranscriptFinal { job, .. } => Some(*job),
+            | Event::TranscriptFinal { job, .. }
+            | Event::TranscriptDiscarded { job } => Some(*job),
             Event::HardwareProbed { .. } | Event::ModelStateChanged { .. } => None,
         }
     }

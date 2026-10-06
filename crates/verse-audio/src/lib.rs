@@ -8,15 +8,17 @@
 //! (cpal plus per-platform loopback) behind a feature flag, so Phase 1 builds
 //! do not pull in a device layer.
 
+pub mod blocks;
 pub mod convert;
 pub mod decode;
 pub mod ffmpeg;
 pub mod vad;
 
+pub use blocks::FixedBlocks;
 pub use convert::{transcode, TranscodeRequest};
 pub use decode::FfmpegDecoder;
 pub use ffmpeg::{is_available as ffmpeg_available, locate as locate_ffmpeg, FFMPEG_ENV};
 pub use vad::{
     SileroVad, VadSettings, DEFAULT_MIN_SILENCE_SECONDS, DEFAULT_MIN_SPEECH_SECONDS,
-    DEFAULT_THRESHOLD,
+    DEFAULT_THRESHOLD, MAX_SPAN_SECONDS,
 };

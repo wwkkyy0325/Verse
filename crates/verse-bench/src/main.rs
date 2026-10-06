@@ -48,6 +48,8 @@ struct Options {
     vad: verse_audio::VadSettings,
     /// Longest output a generative engine may produce, in tokens.
     max_output_tokens: Option<i32>,
+    /// When to disbelieve the segmenter and recognise the file whole.
+    guard: verse_pipeline::GuardSettings,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -67,6 +69,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         inverse_text_normalization: options.itn,
         vad: options.vad,
         max_output_tokens: options.max_output_tokens,
+        guard: options.guard,
     };
 
     eprintln!("loading {} ...", options.engine);
@@ -139,8 +142,8 @@ fn score_dataset(
     for (index, utterance) in utterances.iter().enumerate() {
         transcriber.set_input(utterance.path.clone());
 
-        let transcript = match transcriber.transcribe(JobId(index as u64 + 1), &bus, &cancel) {
-            Ok(transcript) => transcript,
+        let transcription = match transcriber.transcribe(JobId(index as u64 + 1), &bus, &cancel) {
+            Ok(transcription) => transcription,
             Err(error) => {
                 // A file that will not open is worth knowing about, but it is
                 // not a recognition error and must not be folded into the rate.
@@ -149,8 +152,8 @@ fn score_dataset(
             }
         };
 
-        segments += transcript.segments.len();
-        let hypothesis = transcript.to_text().replace('\n', "");
+        segments += transcription.transcript.segments.len();
+        let hypothesis = transcription.transcript.to_text().replace('\n', "");
         let score = cer::score(&utterance.reference, &hypothesis);
 
         errors += score.errors;
@@ -174,6 +177,8 @@ fn score_dataset(
             reference: utterance.reference.clone(),
             hypothesis,
             score,
+            coverage: transcription.coverage.ratio(),
+            recovered: transcription.recovered,
         });
 
         if (index + 1) % 200 == 0 {
@@ -239,6 +244,7 @@ fn parse(args: Vec<String>) -> Result<Options, String> {
         itn: true,
         vad: verse_audio::VadSettings::default(),
         max_output_tokens: None,
+        guard: verse_pipeline::GuardSettings::default(),
     };
 
     let mut i = 0;
@@ -267,6 +273,12 @@ fn parse(args: Vec<String>) -> Result<Options, String> {
                     raw.parse()
                         .map_err(|_| format!("--max-tokens {raw} is not a number"))?,
                 );
+            }
+            "--guard-floor" => {
+                let raw = take(&args, &mut i, "--guard-floor")?;
+                options.guard.floor = raw
+                    .parse()
+                    .map_err(|_| format!("--guard-floor {raw} is not a number"))?;
             }
             "--min-silence" => {
                 let raw = take(&args, &mut i, "--min-silence")?;

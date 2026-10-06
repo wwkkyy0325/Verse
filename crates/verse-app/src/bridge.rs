@@ -218,6 +218,7 @@ pub fn spawn_forwarder(app: AppHandle, subscription: Subscription) {
                     end_ms: end.as_millis() as u64,
                     text,
                 }),
+                Applied::Cleared => Some(Update::Cleared),
                 Applied::Progress { position, .. } => Some(Update::Progress {
                     elapsed_ms: position.as_millis() as u64,
                 }),
@@ -279,6 +280,7 @@ pub fn start(app: &AppHandle, input: std::path::PathBuf, models_dir: std::path::
             inverse_text_normalization: true,
             vad: verse_audio::VadSettings::default(),
             max_output_tokens: None,
+            guard: verse_pipeline::GuardSettings::default(),
         };
 
         // Loading is where a missing or unusable model shows up, and it
@@ -375,6 +377,17 @@ mod tests {
             value,
             json!({ "kind": "segment", "startMs": 1500, "endMs": 3200, "text": "开放时间" })
         );
+    }
+
+    #[test]
+    fn a_cleared_update_carries_nothing_but_its_name() {
+        // Emitted when a job is replaced, and again when the guard discards a
+        // transcript it has already published. A frontend that does not
+        // recognise it would keep showing the discarded segments and append
+        // the replacement to them.
+        let value = serde_json::to_value(Update::Cleared).expect("serializes");
+
+        assert_eq!(value, json!({ "kind": "cleared" }));
     }
 
     #[test]
