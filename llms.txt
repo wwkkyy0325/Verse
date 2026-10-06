@@ -14,6 +14,10 @@ return distinct exit codes rather than a single non-zero.
     verse transcribe <file|dir>... [options]
     verse model list [--json] [--models <dir>]
     verse model fetch <id> [--models <dir>]
+    verse model remove <id> [--models <dir>]
+    verse model clean [--json] [--models <dir>]
+    verse cache size [--json]
+    verse cache clean [--json]
 
 A directory argument expands to the audio files beneath it, recursively,
 sorted. One model is loaded for the whole batch — about 50× faster on a hundred

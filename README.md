@@ -12,6 +12,10 @@ network access in the whole program is the one command that downloads a model.
 - **Honest about its own failures.** A measurement of how much audio actually
   reached the recogniser travels with every result, because a short transcript
   and a truncated one look identical without it.
+- **Does not do the same work twice.** A result is cached against the audio it
+  came from, so transcribing the same file again is instant, and a long file
+  interrupted halfway resumes without redoing the recognition. The cache is
+  local files and nothing else; `--no-cache` turns it off.
 
 ## Install
 
@@ -24,7 +28,9 @@ Two things are needed at runtime:
 - **ffmpeg** on `PATH` (or set `VERSE_FFMPEG` to it). Formats are read by
   invoking ffmpeg, never by linking it.
 - **A model.** `verse model fetch sensevoice` gets the default, 228 MB. The
-  VAD model comes with it.
+  VAD model comes with it. `verse model list` shows what is installed and how
+  much disk it is using, `verse model remove <id>` deletes one, and
+  `verse model clean` clears half-finished downloads.
 
 The build downloads a prebuilt sherpa-onnx archive; behind a slow link, see
 `docs/llmwiki/design.md` §7.2 for staging it by hand.

@@ -103,6 +103,41 @@ pub struct ModelEntry {
     /// Where it is, or would be.
     pub directory: String,
     pub mirrors: Vec<String>,
+    /// What it occupies on disk, or zero when it is not installed.
+    ///
+    /// Reported because a model directory is the largest thing this program
+    /// puts on a machine, and "how much is it using" is the first question
+    /// anyone asks before deciding to remove one.
+    pub bytes: u64,
+    /// How much of that is half-finished downloads.
+    ///
+    /// Counted separately because a `.part` file is not a model: a caller
+    /// totalling what is installed should not be adding up transfers that
+    /// never completed.
+    pub partial_bytes: u64,
+}
+
+/// What the transcription cache is holding.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheUsage {
+    pub version: u32,
+    pub directory: String,
+    pub entries: usize,
+    pub bytes: u64,
+    /// Half-written files. Not transcriptions, and counted apart from them.
+    pub temporary_bytes: u64,
+}
+
+/// What a cleanup removed.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Cleanup {
+    pub version: u32,
+    /// One line per thing removed, so a caller can see what went without
+    /// reconstructing it from a count.
+    pub removed: Vec<String>,
+    pub bytes: u64,
 }
 
 #[derive(Debug, Serialize)]

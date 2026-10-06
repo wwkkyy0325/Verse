@@ -93,6 +93,7 @@ fn main() -> ExitCode {
             }
         }
         Some("model") => model_command(&args[1..]),
+        Some("cache") => cache_command(&args[1..]),
         Some("--version") | Some("-V") => {
             println!("verse {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -122,8 +123,12 @@ fn print_usage() {
     println!();
     println!("commands:");
     println!("  transcribe <file>     Transcribe an audio or video file");
-    println!("  model list            Show known models and whether they are present");
+    println!("  model list            Show known models, with their sizes");
     println!("  model fetch <id>      Download a model");
+    println!("  model remove <id>     Delete an installed model");
+    println!("  model clean           Delete half-finished downloads");
+    println!("  cache size            Show what the transcription cache holds");
+    println!("  cache clean           Empty the transcription cache");
     println!();
     println!("  --help, -h            Show this message");
     println!("  --version, -V         Show the version");
@@ -871,6 +876,9 @@ fn count(n: usize, noun: &str) -> String {
 }
 
 fn model_command(args: &[String]) -> Result<(), Failure> {
+    const USAGE: &str =
+        "usage: verse model list | fetch <id> | remove <id> | clean [--models <dir>] [--json]";
+
     match args.first().map(String::as_str) {
         Some("list") => model_list(&models_dir_from(args), args.iter().any(|a| a == "--json")),
         Some("fetch") => {
@@ -880,9 +888,154 @@ fn model_command(args: &[String]) -> Result<(), Failure> {
                 .ok_or_else(|| Failure::usage("usage: verse model fetch <id> [--models <dir>]"))?;
             model_fetch(id, &models_dir_from(args))
         }
-        _ => Err(Failure::usage(
-            "usage: verse model list | verse model fetch <id>",
-        )),
+        Some("remove") => {
+            let id = args
+                .get(1)
+                .filter(|a| !a.starts_with('-'))
+                .ok_or_else(|| Failure::usage("usage: verse model remove <id> [--models <dir>]"))?;
+            model_remove(id, &models_dir_from(args))
+        }
+        Some("clean") => model_clean(&models_dir_from(args), args.iter().any(|a| a == "--json")),
+        _ => Err(Failure::usage(USAGE)),
+    }
+}
+
+/// Delete an installed model.
+///
+/// Reports what it freed, because "removed" on its own does not tell anyone
+/// whether it was worth doing.
+fn model_remove(id: &str, models_dir: &Path) -> Result<(), Failure> {
+    let freed = verse_model::cleanup::remove_model(models_dir, id).map_err(|e| Failure {
+        code: if e.kind() == std::io::ErrorKind::NotFound {
+            exit_code(ErrorKind::Model)
+        } else {
+            exit_code(ErrorKind::Io)
+        },
+        message: format!("could not remove {id}: {e}"),
+    })?;
+
+    println!("removed {id} ({})", human_bytes(freed));
+    Ok(())
+}
+
+/// Delete half-finished downloads.
+///
+/// The downloader keeps them deliberately, so that an interrupted transfer can
+/// be resumed. They become litter only once nobody is going to resume them,
+/// which is not a thing this can determine — so it is a command rather than
+/// something done at startup.
+fn model_clean(models_dir: &Path, json: bool) -> Result<(), Failure> {
+    let found = verse_model::cleanup::partials(models_dir);
+    let removed = verse_model::cleanup::remove_partials(models_dir).map_err(|e| Failure {
+        code: exit_code(ErrorKind::Io),
+        message: format!("could not clean {}: {e}", models_dir.display()),
+    })?;
+
+    if json {
+        report::print_json(&report::Cleanup {
+            version: report::VERSION,
+            removed: found.iter().map(|p| p.path.display().to_string()).collect(),
+            bytes: removed.bytes,
+        });
+        return Ok(());
+    }
+
+    if found.is_empty() {
+        println!("nothing to clean in {}", models_dir.display());
+        return Ok(());
+    }
+
+    for partial in &found {
+        println!("  removed {}", partial.path.display());
+    }
+    println!("{} files, {}", removed.files, human_bytes(removed.bytes));
+    Ok(())
+}
+
+/// Report and clear the transcription cache.
+fn cache_command(args: &[String]) -> Result<(), Failure> {
+    const USAGE: &str = "usage: verse cache size | clean [--json]";
+
+    let cache = verse_store::Cache::under(&verse_store::data_dir(&verse_store::Roots::from_env()));
+    let json = args.iter().any(|a| a == "--json");
+
+    match args.first().map(String::as_str) {
+        Some("size") => {
+            let usage = cache.usage();
+            if json {
+                report::print_json(&report::CacheUsage {
+                    version: report::VERSION,
+                    directory: cache.root().display().to_string(),
+                    entries: usage.entries,
+                    bytes: usage.bytes,
+                    temporary_bytes: usage.temporary_bytes,
+                });
+            } else {
+                println!("cache: {}", cache.root().display());
+                println!(
+                    "  {} transcriptions, {}",
+                    usage.entries,
+                    human_bytes(usage.bytes)
+                );
+                if usage.temporaries > 0 {
+                    println!(
+                        "  {} half-written files, {}",
+                        usage.temporaries,
+                        human_bytes(usage.temporary_bytes)
+                    );
+                }
+            }
+            Ok(())
+        }
+        Some("clean") => {
+            // Swept first: a half-written file from a process that died is
+            // removed whether or not it is still recent enough for the sweep
+            // to have taken it on its own.
+            let swept = cache.sweep_temporaries();
+            let removed = cache.clean().map_err(|e| Failure {
+                code: exit_code(ErrorKind::Io),
+                message: format!("could not clean the cache: {e}"),
+            })?;
+
+            if json {
+                report::print_json(&report::Cleanup {
+                    version: report::VERSION,
+                    removed: (0..removed.entries)
+                        .map(|n| format!("entry {n}"))
+                        .collect(),
+                    bytes: removed.total_bytes(),
+                });
+            } else {
+                println!(
+                    "cleared {} transcriptions, {}{}",
+                    removed.entries,
+                    human_bytes(removed.total_bytes()),
+                    if swept > 0 {
+                        format!(" ({swept} half-written files)")
+                    } else {
+                        String::new()
+                    }
+                );
+            }
+            Ok(())
+        }
+        _ => Err(Failure::usage(USAGE)),
+    }
+}
+
+/// Bytes as something a person reads.
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1000.0 && unit < UNITS.len() - 1 {
+        value /= 1000.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
     }
 }
 
@@ -919,6 +1072,13 @@ fn model_list(models_dir: &Path, json: bool) -> Result<(), Failure> {
                     .display()
                     .to_string(),
                 mirrors: spec.mirrors.iter().map(|m| m.name.clone()).collect(),
+                bytes: verse_model::cleanup::usage(models_dir, &spec.id).bytes,
+                partial_bytes: verse_model::cleanup::partials(
+                    &Downloader::directory_for(spec, models_dir),
+                )
+                .iter()
+                .map(|partial| partial.bytes)
+                .sum(),
             })
             .collect();
 
@@ -936,14 +1096,35 @@ fn model_list(models_dir: &Path, json: bool) -> Result<(), Failure> {
     println!();
 
     for spec in &catalog.models {
-        let mark = if Downloader::is_present(spec, models_dir) {
-            "present"
-        } else {
-            "missing"
-        };
-        println!("  {:<12} {:<8} {}", spec.id, mark, spec.display_name);
+        let installed = Downloader::is_present(spec, models_dir);
+        let mark = if installed { "present" } else { "missing" };
 
-        if !Downloader::is_present(spec, models_dir) {
+        let on_disk = verse_model::cleanup::usage(models_dir, &spec.id).bytes;
+        let partial: u64 =
+            verse_model::cleanup::partials(&Downloader::directory_for(spec, models_dir))
+                .iter()
+                .map(|p| p.bytes)
+                .sum();
+
+        println!(
+            "  {:<12} {:<8} {:>10} {}",
+            spec.id,
+            mark,
+            if on_disk > 0 {
+                human_bytes(on_disk)
+            } else {
+                "-".to_string()
+            },
+            spec.display_name
+        );
+
+        // Said separately, because a directory holding 500 MB of abandoned
+        // transfer is not a model that is 500 MB on its way to being installed.
+        if partial > 0 {
+            println!("      {} of it is an unfinished download", human_bytes(partial));
+        }
+
+        if !installed {
             for mirror in &spec.mirrors {
                 println!("      via {}", mirror.name);
             }

@@ -9,9 +9,11 @@
 //! and `is_present` exists so a caller can check before offering.
 
 pub mod catalog;
+pub mod cleanup;
 pub mod downloader;
 pub mod state;
 
 pub use catalog::{Catalog, Mirror, ModelFile, ModelSpec};
+pub use cleanup::{Partial, Usage};
 pub use downloader::Downloader;
 pub use state::DownloadState;

@@ -256,7 +256,7 @@ segmenter that drifted by a few milliseconds between runs simply produces a
 miss and the span is recognised again. The failure mode is redoing work, never
 inventing it.
 
-## [ ] 5. Model cleanup
+## [x] 5. Model cleanup
 
 `stale_partials`, `remove_model` (canonicalised, and required to be inside the
 models root), `usage`. `verse model` gains `remove` and `clean`; `model list`
@@ -268,6 +268,47 @@ at startup would silently defeat that.
 
 **Verify:** a planted `.part` is listed and removed; a completed file is never
 mistaken for a partial; removal refuses to escape the models root.
+
+**Done.** Nine tests, and both commands exercised against a planted scratch
+tree holding one complete model and two abandoned transfers:
+
+```
+  sensevoice   present    239.5 MB SenseVoice-Small (zh, en, yue, ja, ko)
+  qwen3-asr    missing    502.8 MB Qwen3-ASR-0.6B (LLM decoder, 52 languages)
+      502.8 MB of it is an unfinished download
+```
+
+The two figures are reported separately because they answer different
+questions: how much disk the model uses, and how much of that is a transfer
+that never landed. A caller totalling what is installed should not be adding
+up half a gigabyte of abandoned download. `model clean` removed both `.part`
+files and named each; `model remove sensevoice` freed 239.5 MB and left the
+other directory alone.
+
+**A `.part` is recognised by its extension and nothing else**, so a model
+called `part-of-speech.onnx` is a model. That is a test.
+
+**Removal is guarded twice.** The id is checked to be a directory name rather
+than a path before the filesystem is consulted, and the resolved directory is
+then checked to be inside the models root — the first covers what a caller
+passes, the second covers a link. `verse model remove ..` reports
+`".." is not a model id` and exits 3, with nothing touched.
+
+`cache size` and `cache clean` were added alongside, since a cache with no way
+to see or empty it is a directory that grows until someone finds it. Verified:
+`cache size` reports the entry count and bytes, and after `cache clean` the
+next run reports `cached = false`.
+
+Commands and flags were checked against `verse --help` rather than assumed, and
+`llms.txt` and `README.md` were updated in the same commit — a command that
+exists and is undocumented is the staleness this project keeps having to
+correct.
+
+**One careless moment worth recording.** The `cache clean` in that check ran
+against the real per-user cache instead of a scratch one, because `VERSE_CACHE`
+was not set for that invocation. It happened to be empty and reported
+`0 transcriptions`, so nothing was lost — but a destructive command run without
+pointing it somewhere disposable is a habit worth not forming.
 
 ## [ ] 6. CLI default output, and the contract fallout
 
