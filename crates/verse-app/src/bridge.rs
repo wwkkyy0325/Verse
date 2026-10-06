@@ -15,8 +15,8 @@ use std::time::Duration;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
-use verse_core::{CancelToken, Event, EventBus, JobId, Segment, Subscription, Transcript};
-use verse_pipeline::{Request, Transcriber};
+use verse_core::{CancelToken, EventBus, JobId, Segment, Subscription, Transcript};
+use verse_pipeline::{ModelKeeper, Request, DEFAULT_IDLE};
 use crate::state::{AppState, Applied, Recovery, Screen};
 
 /// The event name the window listens on.
@@ -32,6 +32,12 @@ const POLL: Duration = Duration::from_millis(250);
 pub struct App {
     pub state: Mutex<AppState>,
     pub bus: EventBus,
+    /// The model, held between jobs.
+    ///
+    /// Here rather than in the worker thread, because a thread that ends with
+    /// its job cannot hold anything across jobs — which is what the window used
+    /// to do, at a cost of 228 MB re-read per file.
+    pub keeper: ModelKeeper,
     /// Set while a job is running, so it can be stopped.
     job: Mutex<Option<RunningJob>>,
     next_job: AtomicU64,
@@ -44,13 +50,45 @@ struct RunningJob {
 
 impl App {
     pub fn new() -> Self {
+        let bus = EventBus::new();
+
         Self {
             state: Mutex::new(AppState::new()),
-            bus: EventBus::new(),
+            keeper: ModelKeeper::with_timeout(bus.clone(), idle_timeout()),
+            bus,
             job: Mutex::new(None),
             // Jobs are numbered from one; zero is left free so a default-initialised
             // id can never match a real one.
             next_job: AtomicU64::new(1),
+        }
+    }
+}
+
+/// How long the window keeps a model after the last job.
+///
+/// `VERSE_MODEL_IDLE_SECS` overrides [`DEFAULT_IDLE`]; `0` pins the model for
+/// the life of the process. An unparseable value falls back **and says so** —
+/// silently ignoring a switch somebody set is worse than refusing it, because
+/// they will conclude the switch does not work.
+fn idle_timeout() -> Option<Duration> {
+    let Some(raw) = std::env::var_os("VERSE_MODEL_IDLE_SECS") else {
+        return Some(DEFAULT_IDLE);
+    };
+    if raw.is_empty() {
+        return Some(DEFAULT_IDLE);
+    }
+
+    let text = raw.to_string_lossy().into_owned();
+    match text.trim().parse::<u64>() {
+        Ok(0) => None,
+        Ok(seconds) => Some(Duration::from_secs(seconds)),
+        Err(_) => {
+            eprintln!(
+                "warning: VERSE_MODEL_IDLE_SECS={text:?} is not a number of seconds; \
+                 using {}",
+                DEFAULT_IDLE.as_secs()
+            );
+            Some(DEFAULT_IDLE)
         }
     }
 }
@@ -395,7 +433,6 @@ pub fn start(app: &AppHandle, input: std::path::PathBuf, models_dir: std::path::
         // Held for the thread's life. Bindings are kept explicit rather than
         // chained, so the guards drop in a known order against it.
         let shared = handle.state::<App>();
-        let bus = shared.bus.clone();
 
         let engine = {
             let state = shared.state.lock().expect("state mutex poisoned");
@@ -424,23 +461,14 @@ pub fn start(app: &AppHandle, input: std::path::PathBuf, models_dir: std::path::
             )),
         };
 
-        // Loading is where a missing or unusable model shows up, and it
-        // happens before the pipeline has published anything — so this is the
-        // one failure the caller has to announce itself.
-        let mut transcriber = match Transcriber::load(request) {
-            Ok(transcriber) => transcriber,
-            Err(error) => {
-                bus.publish(Event::JobFailed {
-                    id: job,
-                    error: (&error).into(),
-                });
-                clear_job(&shared, job);
-                return;
-            }
-        };
-
+        // The keeper owns loading, and it announces a load failure itself —
+        // including the `JobStarted` that claims the job id. This thread used
+        // to publish the failure on its own, without that claim, and the screen
+        // discarded it: a model present at the right size but unusable left the
+        // window on "正在准备…" for good.
+        //
         // Everything else publishes its own outcome.
-        let _ = transcriber.transcribe(job, &bus, &cancel);
+        let _ = shared.keeper.transcribe(request, job, &cancel);
 
         clear_job(&shared, job);
     });

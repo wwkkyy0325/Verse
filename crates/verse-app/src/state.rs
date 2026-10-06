@@ -778,6 +778,63 @@ mod tests {
     }
 
     #[test]
+    fn a_load_failure_reaches_the_screen_when_its_job_was_announced() {
+        // The sequence the keeper publishes when it cannot load a model:
+        // JobStarted, then JobFailed. Note what this test does *not* use —
+        // the `working()` helper above, because it injects JobStarted itself
+        // and so cannot tell whether anything else did.
+        let mut state = AppState::new();
+        assert!(matches!(
+            state.file_chosen(input("a.wav"), true),
+            Effect::Transcribe(_)
+        ));
+
+        state.apply(&Event::JobStarted {
+            id: JobId(7),
+            kind: verse_core::JobKind::FileTranscribe,
+        });
+        let applied = state.apply(&Event::JobFailed {
+            id: JobId(7),
+            error: error(ErrorKind::Model, "the model file is not usable"),
+        });
+
+        assert_eq!(applied, Applied::Screen);
+        match state.screen() {
+            Screen::Failed(failed) => assert_eq!(failed.recovery, Recovery::GetModel),
+            other => panic!("expected a failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_failure_for_a_job_nobody_announced_is_ignored() {
+        // Why the `JobStarted` above is load-bearing rather than tidiness.
+        //
+        // A job id is claimed by `JobStarted` and by nothing else. Output for an
+        // unclaimed id is discarded, which is deliberate — it is what stops a
+        // cancelled job's stragglers landing on the screen that replaced it.
+        // The consequence is that a failure published *without* its
+        // `JobStarted` is discarded too, and the screen waits for ever.
+        //
+        // That was real: a model present at the expected size but unusable fails
+        // to load, and loading happened before the pipeline published anything,
+        // so the failure arrived unclaimed and the window sat on "正在准备…"
+        // with a cancel button for a job that was never running.
+        let mut state = AppState::new();
+        state.file_chosen(input("a.wav"), true);
+
+        let applied = state.apply(&Event::JobFailed {
+            id: JobId(7),
+            error: error(ErrorKind::Model, "the model file is not usable"),
+        });
+
+        assert_eq!(applied, Applied::Nothing);
+        assert!(
+            matches!(state.screen(), Screen::Working(_)),
+            "still waiting, which is the dead end this pins"
+        );
+    }
+
+    #[test]
     fn a_network_failure_is_worth_retrying() {
         let mut state = working();
         state.apply(&Event::JobFailed {

@@ -127,7 +127,7 @@ stays true.
 `ModelStatus`, because `Held` reads as a value rather than a state and the
 method is `status()`.
 
-## [ ] 3. The window keeps its model
+## [x] 3. The window keeps its model
 
 `App` gains a keeper; the worker stops loading and stops publishing its own
 `JobFailed`. No preload at startup: loading 228 MB before the user has chosen a
@@ -136,6 +136,32 @@ file contradicts "downloads are user-initiated everywhere".
 **Verify:** a test driving `file_chosen(ready)` → `JobStarted` → `JobFailed`
 lands on `Screen::Failed` with `Recovery::GetModel`. It fails today. The window
 itself stays unverified and is recorded as such.
+
+**Done.** `App` gained `keeper: ModelKeeper`, and the worker's fifteen lines of
+load-and-announce became one call. 53 tests in the crate.
+
+**The plan's "it fails today" was wrong, and the reason is worth keeping.** The
+test it described drives the *fixed* sequence, so it would pass either way. The
+existing `a_missing_model_offers_to_get_one` cannot catch the dead end for the
+opposite reason: the `working()` helper it uses injects `JobStarted` itself, so
+it can never tell whether anything else did.
+
+What pins it is a **pair**, and neither half is sufficient alone:
+
+- the keeper's `a_failed_load_announces_the_job_before_the_failure` — that the
+  sequence is `[JobStarted, JobFailed]` and not just the failure;
+- `a_failure_for_a_job_nobody_announced_is_ignored` — that a bare failure is
+  discarded by the ownership guard. It asserts the guard's real behaviour, and
+  it was **checked to bite**: removing the guard makes it fail with
+  `left: Screen, right: Nothing`.
+
+Together they say: the old code produced the second case, the new code produces
+the first. Neither test claims more than it shows.
+
+`VERSE_MODEL_IDLE_SECS` is read in the app rather than in the keeper, so a
+service can pass its own configuration. `0` pins the model; an unparseable value
+falls back **and says so**, because silently ignoring a switch somebody set is
+how they conclude the switch does not work.
 
 ## [ ] 4. Measure
 
