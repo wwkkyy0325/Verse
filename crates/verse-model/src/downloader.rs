@@ -166,6 +166,22 @@ impl Downloader {
         // leaves something that looks like a complete model.
         let partial = dir.join(format!("{}.part", file.local));
 
+        // `local` may name a subdirectory — Qwen3's tokenizer files do — and
+        // the `.part` sibling has to sit beside the destination, so the
+        // directory must exist before anything is written. Done here, before
+        // the request, rather than alongside the write: a layout we cannot
+        // create should fail immediately, not after the download that precedes
+        // it. `create_dir_all` on a path that already exists is a no-op, so a
+        // flat `local` costs nothing.
+        if let Some(parent) = partial.parent() {
+            fs::create_dir_all(parent).map_err(|e| {
+                Error::new(
+                    ErrorKind::Io,
+                    format!("could not create {}: {e}", parent.display()),
+                )
+            })?;
+        }
+
         let resume_from = fs::metadata(&partial).map(|m| m.len()).unwrap_or(0);
 
         let mut request = self.agent.get(&url);
@@ -407,6 +423,43 @@ mod tests {
         assert!(state.is_settled());
         let reason = state.reason().expect("should have failed");
         assert!(reason.contains("mirror"), "got: {reason}");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_nested_local_path_has_its_directory_made() {
+        // Qwen3's tokenizer files live in a subdirectory of the model
+        // directory, and the `.part` file is written beside the destination.
+        // Without the subdirectory the transfer fails on a path that was never
+        // created — after downloading every file that came before it.
+        let spec = ModelSpec {
+            id: "nested".to_string(),
+            display_name: "Nested".to_string(),
+            files: vec![ModelFile {
+                remote: "a.bin".to_string(),
+                local: "sub/dir/a.bin".to_string(),
+                size: Some(4),
+            }],
+            // A reserved port on the loopback interface, refused at once, so
+            // the fetch gets past mirror selection and fails at the write.
+            mirrors: vec![Mirror {
+                name: "unreachable".to_string(),
+                base_url: "http://127.0.0.1:1".to_string(),
+                repo: "x".to_string(),
+            }],
+        };
+
+        let root = temp_dir("nested-local");
+
+        // The fetch is meant to fail. What is under test is that the directory
+        // exists by the time it does.
+        let _ = Downloader::new().fetch(&spec, &root, |_| {}, &CancelToken::new());
+
+        assert!(
+            Downloader::directory_for(&spec, &root).join("sub/dir").is_dir(),
+            "the nested directory should have been created before the transfer"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
