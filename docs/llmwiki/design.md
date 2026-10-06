@@ -48,15 +48,26 @@ verse-core     Domain model, traits, events, registry, router, text chain  [lib]
 verse-audio    decode + convert (ffmpeg sidecar), VAD segmentation         [lib]
 verse-asr      Engine implementations — sherpa-onnx FFI lives here         [lib]
 verse-model    Model catalog + multi-source resumable downloader           [lib]
+verse-store    Per-user directories, result cache, resume, output naming   [lib]
 verse-cli      Command-line entry point                                    [bin]
 verse-app      Tauri 2 shell — Rust backend + web frontend in `ui/`        [bin]
+verse-bench    Evaluation harness; deliberately not shipped                 [bin]
 ```
 
-Three boundaries justify the splits:
+Four boundaries justify the splits:
 
 - **All traits live in `verse-core`; only implementations live elsewhere.** `AudioSource`, `Segmenter`, `AsrEngine` and `TextSink` are defined there as pure abstractions. This is what lets the registry (§4.6) hold implementations without `verse-core` ever linking sherpa-onnx, and it is what makes swapping an engine a configuration change rather than a code change.
 - `verse-model` isolates all network access. This is what makes the offline guarantee structural (§4.5).
 - `verse-audio` and `verse-asr` are the two crates that touch native code — ffmpeg through a child process, sherpa-onnx through FFI. `verse-core` unit tests therefore link neither, and stay fast.
+- **`verse-store` owns "where data lives on this machine"** — the per-user directories, the transcription result cache, the resume checkpoints, and the naming rules that decide which file a transcript is written to. It is a leaf: it depends on no workspace crate, so the command line can resolve an output path without linking the engine. The cache's wire types live here for the same reason the CLI's live in `verse-cli/src/report.rs` — the format belongs to the crate that owns it, and `verse-core` keeps its empty dependency list.
+
+**A decoded-PCM cache was considered and rejected.** It would let a re-run skip
+ffmpeg, but the result cache (§4.9) already answers the common case without the
+decode happening at all; the PCM cache only earns its keep when the *same* audio
+is re-run through a *different* engine, which is evaluation work and is what
+`verse-bench` is for. It would cost roughly 1.4 GB per two hours of audio, with
+an eviction problem of its own. Recorded here so it is not re-proposed as a new
+idea.
 
 `verse-app` is a **Tauri 2** application. The interface is a web frontend —
 Svelte 5 and TypeScript, built by Vite — rendered in the system webview, and
@@ -142,6 +153,13 @@ Long files must not be loaded whole. A 2-hour recording decodes to roughly 1.4 G
 ### 4.5 Runtime boundary: offline
 
 `verse-core` must contain **no HTTP client**. All network access lives in `verse-model` and runs only on explicit user action. "Works offline" is then an architectural property, not a discipline.
+
+The caches of §4.9 hold this too. They read and write local files and nothing
+else: no remote validation, no checking whether a cached result is still
+current, no fetch on a miss. A cache miss means doing the work, not asking
+anyone about it. `verse-store` depends on no workspace crate and has no HTTP
+client, so this is checkable by reading its manifest rather than by trusting a
+convention.
 
 ### 4.6 Communication backbone
 
@@ -236,6 +254,40 @@ detector, only four have low coverage; the rest kept nearly all their audio
 and were mis-recognised anyway. This catches the losses, which are the
 catastrophic ones, and does not catch the rest. The root cause of the low
 confidence is still unknown.
+
+### 4.9 Storage: the cache, resume, and where a transcript goes
+
+`verse-store` answers three questions that all reduce to "where does this live
+on the user's machine": which file a transcript is written to, whether this
+exact work has been done before, and how far an interrupted file got.
+
+**Everything is per-user, and nothing is guessed.** The output directory
+resolves `VERSE_OUTPUT` → the shell's Documents folder + `Verse` → `home/
+Documents/Verse` → local app data. OneDrive redirection is followed, because
+that is where the user's Documents actually is, but it is **detected and
+reported once**: the program makes no network call, while the user's sync
+client will upload whatever lands there, and that is theirs to know.
+
+**A cache is never allowed to break the product.** An entry that will not
+parse, an unknown version, a half-written file — each is a *miss*, never an
+error, and the work is simply redone. Writes go to a temporary name and are
+renamed into place, so a crash cannot leave a file that reads as complete.
+
+**A cache hit must be indistinguishable from a run, to everything downstream.**
+The hook sits inside `Transcriber::transcribe` rather than in each front-end
+precisely so this is true once instead of three times: a hit publishes the same
+`JobStarted` → one `TranscriptSegment` per segment → `TranscriptFinal` →
+`JobFinished` sequence. Publishing only the final transcript would leave the
+window showing an empty result while reporting success. The one thing a hit
+skips is the work.
+
+**Resume is per span, and its failure mode is redoing work.** `recognize`
+already resets the engine for every span, so spans are genuinely independent
+and a span's stored result can be reused when its samples are identical. A
+resumed run re-decodes and re-segments the file from the start — sherpa-onnx
+does not expose the detector's internal state — but skips the recognition,
+which is the dominant cost. If a span's identity does not match, it is
+recognised again. It is never approximated, and it is never fabricated.
 
 ## 5. Engine and model selection
 

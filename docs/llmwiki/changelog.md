@@ -1039,3 +1039,60 @@ launched from `crates/verse-app/ui`, where the CLI cannot find
 shell reported **exit 0** and the failure stayed invisible until the log was
 read. A non-zero exit is not the only way a command can fail to do its job;
 piping to a formatter discards the status that would have said so.
+
+## 2026-10-06 — Where results go, and not doing the same work twice
+
+An audit of the product's own main line — "drop any audio in, get text out" —
+found two of its four parts missing. Accepting any audio is done, and does it
+without a temp file: ffmpeg streams PCM to stdout. Automatic processing is
+done, except that a missing model stops and waits instead of fetching itself.
+But **the result had nowhere of its own to go** — the CLI wrote beside the
+input, the window had no default at all and destroyed an unexported transcript
+the moment the next file arrived — and **caching and deletion did not exist**.
+Not "were incomplete": `缓存`, `临时文件` and `cleanup` appeared nowhere in
+`design.md` or `ui-design.md`, and production code contained no `remove_file`
+call of any kind.
+
+This round designs that, having first established the constraint that shapes
+it.
+
+### The constraint, verified before designing
+
+A cache hit must republish **every segment**, not just the final transcript.
+The window builds its segment list from `Event::TranscriptSegment`
+(`state.rs:375` → `bridge.rs:273` → `Update::Segment` → `App.svelte`), and
+`TranscriptFinal` (`state.rs:391`) only finalises. A hit publishing only the
+final transcript would render the Done screen as "没有识别到内容" while
+reporting success — an empty result that looks like a finished job.
+
+That is why the hook goes inside `Transcriber::transcribe`, which the CLI, the
+window and the harness all pass through, rather than into each front-end.
+
+### Decisions
+
+A new leaf crate, `verse-store`, owns "where data lives": per-user directories,
+the result cache, resume checkpoints, and output naming. It depends on no
+workspace crate, so the command line can resolve a path without linking the
+engine, and the cache's wire types live with the wire as `report.rs` and
+`bridge.rs` already do.
+
+The output directory resolves `VERSE_OUTPUT` → the shell's Documents folder →
+`home/Documents` → local app data. OneDrive redirection is followed but
+**detected and reported**, because the program makes no network call while the
+user's sync client will happily upload a transcript written into a synced
+folder.
+
+A **decoded-PCM cache was cut.** The result cache already answers the common
+case — a re-run does not reach the decoder at all — so PCM on disk only earns
+its keep when the same audio goes through a *different* engine, which is
+evaluation work and is what `verse-bench` is for. It would cost about 1.4 GB
+per two hours of audio with its own eviction problem. Recorded in `design.md`
+§4.1 so it is not re-proposed as a new idea.
+
+Noted while editing §4.1: its crate table was missing `verse-bench`
+altogether. Added.
+
+The work is staged in `tasks/storage-cache-output.md`. Step 6 is a **breaking
+change** — the CLI's default output directory moves — and the published
+contracts (`llms.txt`, `README.md`, the usage text, the existing tests) move in
+the same commit rather than after it.
