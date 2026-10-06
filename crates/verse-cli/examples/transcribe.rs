@@ -8,7 +8,7 @@
 //!   cargo run -p verse-cli --example transcribe -- \
 //!       <engine-id> <model-dir> <audio-file> [punct-model]
 //!
-//! `engine-id` is `paraformer` or `sensevoice`.
+//! `engine-id` is `sensevoice` or `qwen3-asr`.
 
 use std::path::{Path, PathBuf};
 
@@ -20,7 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.len() < 3 {
         eprintln!("usage: transcribe <engine-id> <model-dir> <audio-file> [punct-model]");
-        eprintln!("       engine-id: paraformer | sensevoice");
+        eprintln!("       engine-id: sensevoice | qwen3-asr");
         std::process::exit(2);
     }
 
@@ -59,7 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Punctuation is a chain stage, not a hard-coded step. SenseVoice needs no
-    // stage here; Paraformer does.
+    // stage here; engines that do not punctuate do.
     if let Some(model) = punct_model {
         let mut chain = TextChain::new();
         chain.push(Box::new(Punctuator::load(Path::new(model))?));

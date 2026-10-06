@@ -225,31 +225,65 @@ Why this one:
 
 Cost: it remains FFI, and it pulls a native dependency (§7.2). Accepted, because the alternative costs Chinese accuracy.
 
-### 5.3 Model tiers (Phase 1, file transcription)
+### 5.3 Which engine, decided by measurement
 
-| Tier | Model | Size | Role | License |
-|------|-------|------|------|---------|
-| **Default** | SenseVoice-Small int8 | 228 MB | Punctuates and normalizes internally. zh / en / yue / ja / ko | ⚠️ FunASR Model License v1.1 |
-| Alternate | Paraformer-large int8 | 227 MB | Registered and swappable. Needs a separate punctuation stage | Apache-2.0 |
-| Optional | FireRedASR2-AED int8 | ~1.1 GB | Best Chinese accuracy, but 0.3–1x realtime | Apache-2.0 |
+Two engines, both punctuating internally so neither needs a second model.
 
-**Why SenseVoice is the default.** It roughly halves the footprint: 228 MB against 227 + 294 MB for Paraformer plus its punctuation model. It also covers five languages rather than two, which costs nothing.
+| | SenseVoice-Small int8 | Qwen3-ASR-0.6B int8 |
+|---|---|---|
+| Size | **228 MB** | 982 MB |
+| License | ⚠️ FunASR Model License v1.1 | Apache-2.0 |
+| Languages | zh / en / yue / ja / ko | 52 |
+| Architecture | encoder-only, CTC-ish | Whisper frontend + encoder, LLM decoder |
 
-**Its license is not Apache-2.0**, despite a widely-copied ModelScope metadata field saying so. The official HuggingFace card has always pointed at the custom FunASR Model License v1.1, which *does* permit commercial use but requires attribution, retention of the model name, and shipping the license text. `THIRD_PARTY_NOTICES.md` records the obligations. Acceptable for an open-source project; it would need review for a closed-source one.
+Measured over 200 utterances of conversation, all three engines that were
+tried (see `tasks/asr-evaluation.md`):
 
-**Accuracy caveat — measured, not assumed.** On three sample clips:
+| | SenseVoice | Paraformer + punct | Qwen3-ASR |
+|---|---|---|---|
+| CER | 6.00% | 5.90% | **5.40%** |
+| exact | 54.5% | 55.5% | **60.0%** |
+| punctuation F1 | **84.3%** | 81.4% | 83.0% |
+| time | **44.6 s** | 109.2 s | 186.0 s |
 
-| clip | SenseVoice | Paraformer + punctuation |
-|------|------------|--------------------------|
-| pure Chinese, short | identical | identical |
-| pure Chinese | `开饭时间` (wrong) | `开放时间` (right) |
-| Chinese / English mixed | `Tuesdayesday` (repeated) | correct |
+Across four more domains Paraformer was 0.6–3.1 points better on characters
+and 1–8 points worse on punctuation, while taking 2.3× as long and twice the
+disk. **It has been removed.** It was not beaten on every axis, but it was
+beaten on enough of them that keeping a third option would have cost more
+than it returned — and its one advantage was the axis least visible to the
+person using the thing.
 
-Both SenseVoice errors landed on English content, which matters because English is the secondary language here and mixed speech is the realistic input. Three short clips is not a verdict — but it is the reason Paraformer stays registered and one configuration change away rather than removed.
+Qwen3 is kept because it is genuinely better at the job and because it is a
+different *kind* of model: a second architecture makes the comparison mean
+something. It is not the default. Four times the time and four times the size
+buys roughly half a point of character accuracy on conversation, and on a
+four-hour recording that is 22 minutes against 5.
 
-**Switching engines is configuration.** Both are registered in `verse-asr::register_builtin_engines`; a model directory holds `model.int8.onnx` and `tokens.txt`. Nothing outside the registry knows which one is in use.
+**Why SenseVoice is still the default.** Best on punctuation, fastest, and a
+quarter of the size. Its two known weaknesses are both visible in the
+measurements: it is weakest on the messiest material (live commerce at
+11.30% CER against 4.80% for conversation), and it never emits an exclamation
+mark.
 
-Cross-benchmark CER numbers are not strictly comparable — different test sets (AISHELL, WenetSpeech, FLEURS, real-clip micro-CER). Do not rank models on a CER table alone.
+**Its license is not Apache-2.0**, despite a widely-copied ModelScope metadata
+field saying so. The official HuggingFace card has always pointed at the
+custom FunASR Model License v1.1, which *does* permit commercial use but
+requires attribution, retention of the model name, and shipping the license
+text. `THIRD_PARTY_NOTICES.md` records the obligations. Acceptable for an
+open-source project; it would need review for a closed-source one.
+
+**An earlier version of this section ranked the engines on three sample
+clips.** They agreed on one, disagreed on two, and both disagreements landed
+on English content — which was read as "Paraformer is better at code
+switching, keep it as an alternative". Five thousand scored utterances later,
+that reading does not survive. Three clips is a hypothesis, not a
+measurement, and the fact that it was recorded as a caveat did not stop it
+from being relied on.
+
+**Switching engines is configuration.** Both are registered in
+`verse-asr::register_builtin_engines`. SenseVoice and Qwen3 use the same
+`model.int8.onnx` + `tokens.txt` layout; Qwen3 needs four graphs and a
+tokenizer directory instead, which the factory hides.
 
 ### 5.4 Punctuation
 

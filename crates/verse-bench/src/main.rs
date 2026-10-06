@@ -45,6 +45,8 @@ struct Options {
     dump: Option<PathBuf>,
     itn: bool,
     vad_threshold: f32,
+    /// Punctuation model, for engines that do not punctuate themselves.
+    punctuation_model: Option<PathBuf>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -63,6 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         vad: Request::vad_for(&options.models),
         inverse_text_normalization: options.itn,
         vad_threshold: options.vad_threshold,
+        punctuation_model: options.punctuation_model.clone(),
     };
 
     eprintln!("loading {} ...", options.engine);
@@ -231,6 +234,7 @@ fn parse(args: Vec<String>) -> Result<Options, String> {
         dump: None,
         itn: true,
         vad_threshold: verse_audio::DEFAULT_THRESHOLD,
+        punctuation_model: None,
     };
 
     let mut i = 0;
@@ -240,6 +244,13 @@ fn parse(args: Vec<String>) -> Result<Options, String> {
             "--engine" => options.engine = take(&args, &mut i, "--engine")?,
             "--dump" => options.dump = Some(PathBuf::from(take(&args, &mut i, "--dump")?)),
             "--no-itn" => options.itn = false,
+            "--punctuation-model" => {
+                options.punctuation_model = Some(PathBuf::from(take(
+                    &args,
+                    &mut i,
+                    "--punctuation-model",
+                )?))
+            }
             "--limit" => {
                 let raw = take(&args, &mut i, "--limit")?;
                 options.limit = Some(

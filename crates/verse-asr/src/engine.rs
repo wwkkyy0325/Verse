@@ -8,7 +8,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use sherpa_onnx::{
-    OfflineModelConfig, OfflineParaformerModelConfig, OfflineRecognizer, OfflineRecognizerConfig,
+    OfflineModelConfig, OfflineQwen3ASRModelConfig, OfflineRecognizer,
+    OfflineRecognizerConfig,
     OfflineSenseVoiceModelConfig,
 };
 use verse_core::{
@@ -42,7 +43,7 @@ impl Language {
 
 /// A recognizer that consumes a whole span of audio and returns one segment.
 ///
-/// This is the shape both Paraformer and SenseVoice have. Long recordings are
+/// The shape an offline engine has. Long recordings are
 /// split into spans upstream — by VAD — and each span is fed to its own engine
 /// call, which is what keeps memory bounded by span length rather than file
 /// length.
@@ -54,24 +55,6 @@ pub struct OfflineEngine {
 }
 
 impl OfflineEngine {
-    /// Paraformer-large. Chinese and English, 10–20x realtime on CPU.
-    ///
-    /// Emits no punctuation — pair it with [`crate::Punctuator`].
-    pub fn paraformer(model: &Path, tokens: &Path, threads: usize) -> Result<Self> {
-        let config = OfflineRecognizerConfig {
-            model_config: OfflineModelConfig {
-                paraformer: OfflineParaformerModelConfig {
-                    model: Some(path_string(model)?),
-                },
-                tokens: Some(path_string(tokens)?),
-                num_threads: thread_count(threads),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        Self::create(config, model, tokens)
-    }
-
     /// SenseVoice-Small. Chinese, English, Cantonese, Japanese and Korean.
     ///
     /// Punctuates and normalizes internally when `use_itn` is set, so it needs
@@ -98,6 +81,69 @@ impl OfflineEngine {
             ..Default::default()
         };
         Self::create(config, model, tokens)
+    }
+
+    /// Qwen3-ASR: a Whisper frontend and encoder with an LLM decoder.
+    ///
+    /// Structurally unlike the others. There is no `tokens.txt` — the
+    /// vocabulary lives in a *directory* of BPE files — and the recogniser is
+    /// assembled from four separate graphs rather than one. `tokens` is set to
+    /// an empty string rather than left unset, which is what the upstream
+    /// example does and what the C layer expects.
+    ///
+    /// This is the size the "lightweight" goal has to be weighed against: 982
+    /// MB against SenseVoice's 228. Whether it earns that is a measurement,
+    /// not an assumption.
+    pub fn qwen3(
+        conv_frontend: &Path,
+        encoder: &Path,
+        decoder: &Path,
+        tokenizer_dir: &Path,
+        threads: usize,
+    ) -> Result<Self> {
+        for path in [conv_frontend, encoder, decoder] {
+            if !path.is_file() {
+                return Err(Error::new(
+                    ErrorKind::Model,
+                    format!("model file not found: {}", path.display()),
+                ));
+            }
+        }
+        if !tokenizer_dir.is_dir() {
+            return Err(Error::new(
+                ErrorKind::Model,
+                format!("tokenizer directory not found: {}", tokenizer_dir.display()),
+            ));
+        }
+
+        let config = OfflineRecognizerConfig {
+            model_config: OfflineModelConfig {
+                qwen3_asr: OfflineQwen3ASRModelConfig {
+                    conv_frontend: Some(path_string(conv_frontend)?),
+                    encoder: Some(path_string(encoder)?),
+                    decoder: Some(path_string(decoder)?),
+                    tokenizer: Some(path_string(tokenizer_dir)?),
+                    ..Default::default()
+                },
+                tokens: Some(String::new()),
+                num_threads: thread_count(threads),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let recognizer = OfflineRecognizer::create(&config).ok_or_else(|| {
+            Error::new(
+                ErrorKind::Model,
+                format!("failed to load Qwen3 model: {}", encoder.display()),
+            )
+        })?;
+
+        Ok(Self {
+            recognizer,
+            samples: Vec::new(),
+            start: Duration::ZERO,
+        })
     }
 
     fn create(config: OfflineRecognizerConfig, model: &Path, tokens: &Path) -> Result<Self> {
@@ -190,7 +236,7 @@ impl AsrEngine for OfflineEngine {
 /// `<|zh|><|NEUTRAL|><|Speech|><|woitn|>`. They describe the audio rather than
 /// transcribe it, and letting them reach a subtitle file would be a bug.
 ///
-/// Paraformer emits none, so this is a no-op for it.
+/// Engines that punctuate internally treat this as a no-op.
 fn clean_markers(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut rest = raw;

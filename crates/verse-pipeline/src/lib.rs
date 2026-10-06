@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-use verse_asr::register_builtin_engines;
+use verse_asr::{register_builtin_engines, Punctuator};
 use verse_audio::{FfmpegDecoder, SileroVad};
 use verse_core::{
     AsrEngine, AudioChunk, AudioFormat, AudioSource, CancelToken, Error, Event, EventBus,
@@ -31,6 +31,18 @@ pub struct Request {
     /// Speech threshold for the voice detector. See
     /// [`verse_audio::DEFAULT_THRESHOLD`] for why this is not simply fixed.
     pub vad_threshold: f32,
+    /// Punctuation model, for engines that do not punctuate themselves.
+    ///
+    /// `None` means the engine's own output is final, which is the case for
+    /// both engines currently registered. An engine that emits bare text —
+    /// most CTC and transducer models do — needs one named here, or it
+    /// produces a transcript no subtitle can be cut from.
+    ///
+    /// It is a *stage* rather than a property of the engine on purpose.
+    /// Punctuation was implicit in the engine choice for as long as only one
+    /// engine was in use, which made the requirement invisible until a
+    /// second one was tried and turned out not to do it.
+    pub punctuation_model: Option<PathBuf>,
 }
 
 impl Request {
@@ -139,17 +151,28 @@ impl Transcriber {
 
         let mut vad =
             SileroVad::load_with(&request.vad, AudioFormat::TARGET, request.vad_threshold)?;
-    let mut source = FfmpegDecoder::open(&request.input, AudioFormat::TARGET)?;
+        let mut source = FfmpegDecoder::open(&request.input, AudioFormat::TARGET)?;
 
-    let mut transcript = Transcript::default();
+        // Loaded once, like the recogniser, and applied to each span as it is
+        // recognised — a span is roughly a sentence, which is the unit the
+        // punctuation model was trained on.
+        let punctuation = request
+            .punctuation_model
+            .as_ref()
+            .map(|model| Punctuator::load(model))
+            .transpose()?;
+        let punctuation: Option<&dyn verse_core::TextProcessor> =
+            punctuation.as_ref().map(|p| p as &dyn verse_core::TextProcessor);
 
-    while let Some(chunk) = source.next_chunk()? {
-        cancel.check()?;
+        let mut transcript = Transcript::default();
 
-        vad.accept(&chunk)?;
-        for span in vad.take() {
-            recognize(span, &mut *engine, &mut transcript, job, bus)?;
-        }
+        while let Some(chunk) = source.next_chunk()? {
+            cancel.check()?;
+
+            vad.accept(&chunk)?;
+            for span in vad.take() {
+                recognize(span, &mut *engine, &mut transcript, job, bus, punctuation)?;
+            }
 
         bus.publish(Event::JobProgress {
             id: job,
@@ -161,9 +184,9 @@ impl Transcriber {
         });
     }
 
-    for span in vad.finish() {
-        recognize(span, &mut *engine, &mut transcript, job, bus)?;
-    }
+        for span in vad.finish() {
+            recognize(span, &mut *engine, &mut transcript, job, bus, punctuation)?;
+        }
 
     Ok(transcript)
     }
@@ -174,12 +197,14 @@ impl Transcriber {
 /// The engine is reused across spans and reset between each, which is what
 /// bounds memory: a span is recognised and dropped before the next is
 /// buffered, so a two-hour recording is never resident all at once.
+#[allow(clippy::too_many_arguments)]
 fn recognize(
     span: AudioChunk,
     engine: &mut dyn AsrEngine,
     out: &mut Transcript,
     job: JobId,
     bus: &EventBus,
+    punctuation: Option<&dyn verse_core::TextProcessor>,
 ) -> Result<(), Error> {
     engine.reset();
     engine.accept(&span)?;
@@ -191,6 +216,18 @@ fn recognize(
         let segment = verse_core::Segment {
             id: SegmentId(out.segments.len() as u64),
             ..segment
+        };
+
+        // Applied per segment rather than to the finished transcript: an
+        // engine that punctuates itself has already done it, and one that
+        // does not is being given one sentence at a time, which is the shape
+        // the model expects.
+        let segment = match punctuation {
+            Some(processor) => verse_core::Segment {
+                text: processor.process(&segment.text),
+                ..segment
+            },
+            None => segment,
         };
 
         bus.publish(Event::TranscriptSegment {

@@ -215,11 +215,72 @@ Two things the domain breakdown shows that a single figure could not:
   little pause to go on. Neither number predicts the other, which is the
   argument for measuring both.
 
-## [ ] 7. Exclamation marks
+## [x] 7. Exclamation marks
 
-F1 is zero: the engine never emits one. Only seven occur in the sample, so the
-evidence is thin, but the direction is not ambiguous. Either the engine cannot
-produce them or the pipeline drops them somewhere.
+F1 is zero for SenseVoice: it never emits one. Seven occur in the sample, so
+the evidence is thin, but the direction is not ambiguous.
 
-**Verify:** find whether SenseVoice can emit ！at all, and if not, decide
-whether it matters enough to add a stage that can.
+**Qwen3-ASR does emit them** — it produced ten false positives in the same
+200 utterances, meaning it writes ！where the reference does not. So this is a
+property of SenseVoice, not of the pipeline, and the pipeline is not dropping
+anything. Logged rather than acted on; a subtitle without exclamation marks
+loses tone, not content.
+
+## [x] 8. Punctuation as a stage, not a property of the engine
+
+`Request::punctuation_model` exists and the pipeline applies it per span.
+
+It was missing for a reason worth recording: punctuation was implicit in the
+engine choice. SenseVoice punctuates internally, so nothing ever asked where
+punctuation came from, and the requirement stayed invisible until a second
+engine was tried. `design.md` §5.4 had described this stage as a
+`TextChain::push` since the first draft; it had never been written.
+
+The stage is now exercised — it is what made the Paraformer comparison fair —
+but **neither registered engine needs it**, which is worth knowing before
+someone assumes it is load-bearing.
+
+## [x] 9. Three engines, and one removed
+
+Same 200 utterances of conversation, then four more domains:
+
+| domain | | SenseVoice | Paraformer+punct | Qwen3-ASR |
+|---|---|---|---|---|
+| conversation | CER | 6.00% | 5.90% | **5.40%** |
+| | punct F1 | **84.3%** | 81.4% | 83.0% |
+| meeting | CER | 11.52% | 8.38% | **7.23%** |
+| | punct F1 | **88.1%** | 83.1% | 87.4% |
+| phone call | CER | 12.77% | 11.64% | **11.24%** |
+| | punct F1 | 75.3% | 67.0% | **78.7%** |
+| documentary | CER | 14.91% | 14.36% | **13.84%** |
+| | punct F1 | 76.0% | 69.7% | **77.2%** |
+| live commerce | CER | 33.17% | 31.31% | **31.57%** |
+| | punct F1 | 65.5% | 64.7% | **71.9%** |
+
+Per 200 utterances: SenseVoice ~50 s, Paraformer ~115 s, Qwen3 ~255 s.
+
+**Paraformer is removed.** It wins 0.6–3.1 points of character accuracy and
+loses 1–8 points of punctuation, 2.3× the time, and twice the disk. Not beaten
+on every axis, but beaten on enough that a third option cost more than it
+returned — and its one advantage was the axis least visible to the person
+using the thing.
+
+**Qwen3-ASR is kept and is not the default.** It is the most accurate on
+every domain measured, and it is a different architecture, which makes the
+comparison worth having. It costs 4–5× the time and 4.3× the size: four hours
+of audio is 5 minutes against 22.
+
+**Live commerce is hard for all three** — around 31–33%. Worth noting that
+this is against the *written* reference; against the verbatim one SenseVoice
+scores 11.30% on the same audio. Both numbers are real; they answer different
+questions.
+
+### What the measurements changed
+
+- The default was going to be re-examined anyway. It was not changed:
+  SenseVoice is fastest, smallest and best-at-punctuation, and the two
+  strengths it lacks are both now quantified rather than suspected.
+- An earlier note in this file said Paraformer looked better on meeting
+  audio. It does — but that note was written before the punctuation stage
+  existed, so it was comparing a two-stage pipeline against a one-stage
+  one. The comparison above is the first fair one.

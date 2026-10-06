@@ -26,13 +26,17 @@ use verse_core::{EngineDescriptor, Registry};
 /// the pipelines, or the UI needs to change. That is the point of the registry.
 pub fn register_builtin_engines(registry: &mut Registry) {
     registry.register_engine(EngineDescriptor {
-        id: "paraformer",
-        display_name: "Paraformer-large (Chinese, English)",
+        id: "qwen3-asr",
+        display_name: "Qwen3-ASR-0.6B (LLM decoder, 52 languages)",
         streaming: false,
         factory: Arc::new(|cfg| {
-            let model = cfg.model_dir.join("model.int8.onnx");
-            let tokens = cfg.model_dir.join("tokens.txt");
-            let engine = OfflineEngine::paraformer(&model, &tokens, cfg.threads)?;
+            let engine = OfflineEngine::qwen3(
+                &cfg.model_dir.join("conv_frontend.onnx"),
+                &cfg.model_dir.join("encoder.int8.onnx"),
+                &cfg.model_dir.join("decoder.int8.onnx"),
+                &cfg.model_dir.join("tokenizer"),
+                cfg.threads,
+            )?;
             Ok(Box::new(engine) as Box<dyn verse_core::AsrEngine>)
         }),
     });
