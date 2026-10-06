@@ -852,3 +852,76 @@ error. Fixed.
 claims it.** What was built is legibility to an AI that has already found the
 project. Whether a crawler ranks it well is not something this repository
 decides.
+
+## 2026-10-06 — The window's three dead ends
+
+Four screens were deferred when the agent-facing CLI was built. This closes
+three of them. The frontend was never the blocker: `App.svelte` already
+rendered all five screens and three of them led nowhere — `NeedsModel` offered
+only "返回", and `Done` had a transcript and no way to write it out.
+
+Each hole was a missing **command**, which is why this is backend work.
+
+### Export
+
+`export(app, path)` renders the finished transcript and writes it. The window
+chooses the path rather than the backend, because the dialog plugin's `save()`
+returns one and doing it in Rust means a callback-shaped API threaded through a
+command that otherwise returns immediately.
+
+`dialog:allow-save` joined the capability file. Without it the window cannot
+ask where to put anything — which is the whole reason the screen was stuck.
+
+The format comes from the extension and an unrecognised one is refused rather
+than guessed. `ScreenView::Done` now carries `exported`, so the window can stop
+offering an export that has already happened; that is what `note_exported` was
+written for and had no caller until now.
+
+### The model screen
+
+`Effect::FetchModel` had been produced by the state machine and handled nowhere
+since it was written. It now has a handler that runs the download on its own
+thread, moves the state machine *and* emits byte progress, and on `Ready`
+starts the job that was waiting — what `NeedsModel { input }` has been carrying
+the path for all along.
+
+`import_model` accepts a folder the user already has, in either of the two
+layouts people end up with after unpacking a download, and copies it into
+`models/<id>/`. Copying rather than referencing, because the pipeline looks in
+one place and a second lookup path is a second thing that can disagree with it.
+A folder missing a file is refused with the file named — the same nested
+`tokenizer/` shape whose absence silently broke the downloader last round.
+
+**Progress does not go through the event bus**, and that is a deliberate
+departure. `verse-core` has an unused `Event::ModelStateChanged` that looked
+like the obvious channel, but its `ModelState` carries no byte counts, and
+`verse-model`'s `DownloadState` cannot be named from `verse-core`. Routing
+through the bus would mean two download vocabularies and a lossy round-trip
+between them. The app layer owns the download — it is not pipeline output — and
+`lib.rs` already emitted `Update::Cleared` directly, so this follows the shape
+already there. A `ModelState` carrying progress was written and then reverted:
+it had no user. **`Event::ModelStateChanged` remains unused**, which is now a
+recorded fact rather than an oversight.
+
+### About
+
+`crates/verse-app/src/about.rs` holds the attribution the model licence
+requires. A test asserts "SenseVoiceSmall" is spelled exactly as upstream
+spells it, because the licence requires the name be kept and a tidied-up
+rendering would not be it.
+
+**The licence-text obligation cannot be discharged from here, and the dialog
+says so.** The file beside the model on hf-mirror is 71 bytes reading "Ref to
+https://github.com/modelscope/FunASR", and GitHub is unreachable from mainland
+China — so neither this machine nor an installed copy can fetch the text. The
+checklist item stays open in `THIRD_PARTY_NOTICES.md`.
+
+### What is not verified
+
+Every one of these screens ends in a click, and a click is the thing an agent
+cannot make: a native save dialog, a progress bar filling, a folder being
+chosen. The logic underneath each is unit-tested — 156 tests, clippy clean —
+and all nine commands are registered, the frontend type-checks against them,
+the bundle builds, and the window opens with an empty log. **But "the button
+works" is a claim that needs a person at the window**, and step 4 of
+`tasks/p1b-screens.md` is left open for exactly that.
