@@ -1,8 +1,11 @@
-//! Manual smoke check for the full chain:
-//! file -> ffmpeg decode -> engine -> optional punctuation -> text.
+//! Manual smoke check for one engine in isolation: file -> ffmpeg decode ->
+//! engine -> text.
 //!
 //! Deliberately goes through the registry and the traits rather than reaching
-//! into sherpa-onnx, so it exercises the same path a pipeline will.
+//! into sherpa-onnx, so it exercises the same path the pipeline will. It also
+//! deliberately *skips* the voice detector, feeding the whole file to the
+//! engine at once — the only way to tell a recogniser that failed from a
+//! recogniser that was never given the audio.
 //!
 //! Run:
 //!   cargo run -p verse-cli --example transcribe -- \
@@ -57,9 +60,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "decoded {chunks} chunks, {} segment(s)",
         transcript.segments.len()
     );
-
-    // Punctuation is a chain stage, not a hard-coded step. SenseVoice needs no
-    // stage here; engines that do not punctuate do.
 
     println!("{}", transcript.to_text());
     Ok(())

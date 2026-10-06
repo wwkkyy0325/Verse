@@ -4118,6 +4118,7 @@ dependencies = [
  "verse-audio",
  "verse-core",
  "verse-model",
+ "verse-pipeline",
 ]
 
 [[package]]

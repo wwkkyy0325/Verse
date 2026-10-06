@@ -9,13 +9,9 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use verse_asr::register_builtin_engines;
-use verse_audio::{FfmpegDecoder, SileroVad};
-use verse_core::{
-    AsrEngine, AudioChunk, AudioFormat, AudioSource, CancelToken, EngineConfig, ExportFormat,
-    HardwareProfile, Registry, Segment, SegmentId, Segmenter, Transcript,
-};
+use verse_core::{CancelToken, EventBus, ExportFormat, HardwareProfile, JobId};
 use verse_model::{Catalog, DownloadState, Downloader};
+use verse_pipeline::{GuardSettings, Request, Transcriber};
 
 const DEFAULT_ENGINE: &str = "sensevoice";
 const DEFAULT_MODELS_DIR: &str = "models";
@@ -155,7 +151,6 @@ fn transcribe_usage() -> String {
     s.push_str(&format!(
         "      --models <dir>      Model root (default: {DEFAULT_MODELS_DIR})\n"
     ));
-    s.push_str("      --punctuation       Add punctuation (needed by engines without it)\n");
     s.push_str(
         "      --vad <file>        VAD model (default: <models>/silero-vad/silero_vad.onnx)",
     );
@@ -169,74 +164,49 @@ fn transcribe(options: &TranscribeOptions) -> Result<(), Box<dyn std::error::Err
         eprintln!("{notice}");
     }
 
-    let model_dir = options.models_dir.join(&options.engine);
+    // The chain itself lives in `verse-pipeline`, shared with the window and
+    // the benchmark. This command owns only the arguments and the output file.
+    let request = Request {
+        input: options.input.clone(),
+        models_dir: options.models_dir.clone(),
+        engine: options.engine.clone(),
+        vad_model: options
+            .vad
+            .clone()
+            .unwrap_or_else(|| Request::vad_for(&options.models_dir)),
+        // What a person would write: numbers normalised, punctuation kept.
+        inverse_text_normalization: true,
+        vad: verse_audio::VadSettings::default(),
+        max_output_tokens: None,
+        guard: GuardSettings::default(),
+    };
 
-    let mut registry = Registry::new();
-    register_builtin_engines(&mut registry);
-    let mut engine = registry.create_engine(
-        &options.engine,
-        &EngineConfig {
-            model_dir,
-            threads: hardware.engine_threads(),
-            inverse_text_normalization: true,
-            max_output_tokens: None,
-        },
-    )?;
+    let mut transcriber = Transcriber::load(request)?;
 
-    let vad_model = options.vad.clone().unwrap_or_else(|| {
-        options
-            .models_dir
-            .join("silero-vad")
-            .join("silero_vad.onnx")
-    });
-    let mut vad = SileroVad::load(&vad_model, AudioFormat::TARGET)?;
-
-    let mut source = FfmpegDecoder::open(&options.input, AudioFormat::TARGET)?;
-    let mut transcript = Transcript::default();
-    let mut spans = 0usize;
-
-    while let Some(chunk) = source.next_chunk()? {
-        vad.accept(&chunk)?;
-        spans += recognize(vad.take(), engine.as_mut(), &mut transcript)?;
-    }
-    spans += recognize(vad.finish(), engine.as_mut(), &mut transcript)?;
+    // Nothing subscribes; the transcript comes back through the return value.
+    let bus = EventBus::new();
+    let cancel = CancelToken::new();
+    let transcription = transcriber.transcribe(JobId(1), &bus, &cancel)?;
 
     let (path, format) = options.resolve_output();
-    std::fs::write(&path, format.render(&transcript))?;
+    std::fs::write(&path, format.render(&transcription.transcript))?;
 
+    // How much of the file's sound reached the recogniser. This is the one
+    // number that separates a transcript that is short because the recording
+    // was short from one that is short because audio was dropped.
+    if let Some(kept) = transcription.coverage.ratio() {
+        eprintln!("{:.0}% of the audio kept", kept * 100.0);
+    }
+    if transcription.recovered {
+        eprintln!("the speech detector lost most of this file; it was recognised whole");
+    }
     eprintln!(
-        "{spans} spans -> {} segments -> {}",
-        transcript.segments.len(),
+        "{} segments -> {}",
+        transcription.transcript.segments.len(),
         path.display()
     );
+
     Ok(())
-}
-
-/// Reuse one engine across spans, one span at a time.
-///
-/// This is what bounds memory: each span is recognized and dropped before the
-/// next is buffered, so a long recording never exists in memory all at once.
-fn recognize(
-    spans: Vec<AudioChunk>,
-    engine: &mut dyn AsrEngine,
-    out: &mut Transcript,
-) -> Result<usize, Box<dyn std::error::Error>> {
-    let count = spans.len();
-
-    for span in spans {
-        engine.reset();
-        engine.accept(&span)?;
-        let piece = engine.finalize()?;
-
-        // Each span's engine reports segment id 0; renumber so ids stay unique
-        // across the whole transcript.
-        for segment in piece.segments {
-            let id = SegmentId(out.segments.len() as u64);
-            out.segments.push(Segment { id, ..segment });
-        }
-    }
-
-    Ok(count)
 }
 
 // --------------------------------------------------------------------- model

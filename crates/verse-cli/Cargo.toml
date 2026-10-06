@@ -13,5 +13,10 @@ path = "src/main.rs"
 [dependencies]
 verse-core.workspace = true
 verse-audio.workspace = true
-verse-asr.workspace = true
 verse-model.workspace = true
+verse-pipeline.workspace = true
+
+# Only the `transcribe` example reaches past the pipeline to an engine
+# directly. The binary itself no longer names one.
+[dev-dependencies]
+verse-asr.workspace = true
