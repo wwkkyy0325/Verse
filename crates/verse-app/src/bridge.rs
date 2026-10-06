@@ -278,9 +278,6 @@ pub fn start(app: &AppHandle, input: std::path::PathBuf, models_dir: std::path::
             // The window shows what a person would write.
             inverse_text_normalization: true,
             vad_threshold: verse_audio::DEFAULT_THRESHOLD,
-            // SenseVoice punctuates internally; an engine that does not would
-            // need one named here.
-            punctuation_model: None,
         };
 
         // Loading is where a missing or unusable model shows up, and it

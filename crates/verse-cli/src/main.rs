@@ -9,11 +9,11 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use verse_asr::{register_builtin_engines, Punctuator};
+use verse_asr::register_builtin_engines;
 use verse_audio::{FfmpegDecoder, SileroVad};
 use verse_core::{
     AsrEngine, AudioChunk, AudioFormat, AudioSource, CancelToken, EngineConfig, ExportFormat,
-    HardwareProfile, Registry, Segment, SegmentId, Segmenter, TextChain, Transcript,
+    HardwareProfile, Registry, Segment, SegmentId, Segmenter, Transcript,
 };
 use verse_model::{Catalog, DownloadState, Downloader};
 
@@ -69,7 +69,6 @@ struct TranscribeOptions {
     format: Option<ExportFormat>,
     engine: String,
     models_dir: PathBuf,
-    punctuation: bool,
     vad: Option<PathBuf>,
 }
 
@@ -81,7 +80,6 @@ impl TranscribeOptions {
             format: None,
             engine: DEFAULT_ENGINE.to_string(),
             models_dir: PathBuf::from(DEFAULT_MODELS_DIR),
-            punctuation: false,
             vad: None,
         };
         let mut input: Option<PathBuf> = None;
@@ -105,7 +103,6 @@ impl TranscribeOptions {
                     options.models_dir = PathBuf::from(take_value(args, &mut i, "--models")?)
                 }
                 "--vad" => options.vad = Some(PathBuf::from(take_value(args, &mut i, "--vad")?)),
-                "--punctuation" | "--punct" => options.punctuation = true,
                 other if other.starts_with('-') => {
                     return Err(format!(
                         "unknown option '{other}'\n\n{}",
@@ -202,13 +199,6 @@ fn transcribe(options: &TranscribeOptions) -> Result<(), Box<dyn std::error::Err
         spans += recognize(vad.take(), engine.as_mut(), &mut transcript)?;
     }
     spans += recognize(vad.finish(), engine.as_mut(), &mut transcript)?;
-
-    if options.punctuation {
-        let model = options.models_dir.join("punctuation").join("model.onnx");
-        let mut chain = TextChain::new();
-        chain.push(Box::new(Punctuator::load(&model)?));
-        chain.run_transcript(&mut transcript);
-    }
 
     let (path, format) = options.resolve_output();
     std::fs::write(&path, format.render(&transcript))?;

@@ -581,3 +581,44 @@ narrowband, and fast overlapping speech over music.
 Meeting punctuation is the **best** of the five, which is the opposite of what
 its character rate suggests. Meetings are hard to hear and easy to punctuate,
 because the pauses are real.
+
+## 2026-10-06 — The punctuation model was surplus, and is gone
+
+Both registered engines punctuate internally. The 294 MB CT-Transformer model,
+`verse_asr::Punctuator`, and the pipeline stage built for it in the previous
+commit have all been removed. `models.json` lists three models again:
+SenseVoice, Qwen3-ASR, and the VAD.
+
+The stage existed for less than a day. It was built to make the Paraformer
+comparison fair — which it did, and which is how Paraformer was found to be
+not worth keeping. With Paraformer gone and both survivors punctuating
+themselves, nothing used it. Keeping a mechanism because it might be needed
+later is how a codebase accumulates the thing this project keeps removing.
+
+**`TextProcessor` and `TextChain` went with it.** They were the abstraction
+the stage was built on, and after the removal they had no implementation and
+no caller. Worth noting *why* they were easy to drop: §4.2 of `design.md`,
+the canonical list of core traits, never contained `TextProcessor` — it had
+been added alongside the punctuation work and only ever appeared as a name in
+a sentence in §4.1. An abstraction that never made it into the design's own
+trait list, and has no implementation, is not a foundation.
+
+`TextSink` stays: it *is* in §4.2, defined and unimplemented, which is a
+different thing from being added in passing.
+
+**What a third engine would need.** If one is added that emits bare text —
+most CTC and transducer models do — the punctuation stage comes back. That is
+a problem to solve when there is such an engine, and the previous commit's
+diff is where to find the solution.
+
+### Where the model list landed
+
+| model | size | role |
+|---|---|---|
+| SenseVoice-Small int8 | 228 MB | default — fastest, smallest, best punctuation |
+| Qwen3-ASR-0.6B int8 | 982 MB | most accurate on every domain measured |
+| Silero VAD | 2.3 MB | required |
+
+Three, down from four. The rule applied was not "is it used" but "does
+anything reach it" — and for both the punctuation model and `TextChain`, the
+answer was no.

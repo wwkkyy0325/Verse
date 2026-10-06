@@ -9,12 +9,10 @@
 //! `AsrEngine` and `TextSink` in `verse_core::traits`.
 
 pub mod engine;
-pub mod punctuator;
-
+pub 
 use std::sync::Arc;
 
 pub use engine::{Language, OfflineEngine};
-pub use punctuator::Punctuator;
 use verse_core::{EngineDescriptor, Registry};
 
 /// Register the engines this crate provides.

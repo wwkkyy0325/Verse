@@ -14,7 +14,6 @@ pub mod export;
 pub mod hardware;
 pub mod registry;
 pub mod router;
-pub mod text;
 pub mod traits;
 
 pub use domain::{
@@ -30,7 +29,6 @@ pub use registry::{
     SourceDescriptor,
 };
 pub use router::{CancelToken, Job, JobInput, Pipeline, Router, RuntimeContext};
-pub use text::{TextChain, TextProcessor};
 pub use traits::{AsrEngine, AudioSource, Segmenter, TextSink};
 
 #[cfg(test)]

@@ -30,29 +30,6 @@
       ]
     },
     {
-      "id": "punctuation",
-      "display_name": "CT-Transformer punctuation (zh, en)",
-      "files": [
-        {
-          "remote": "model.onnx",
-          "local": "model.onnx",
-          "size": 294372519
-        }
-      ],
-      "mirrors": [
-        {
-          "name": "hf-mirror",
-          "base_url": "https://hf-mirror.com",
-          "repo": "csukuangfj/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12/resolve/main"
-        },
-        {
-          "name": "huggingface",
-          "base_url": "https://huggingface.co",
-          "repo": "csukuangfj/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12/resolve/main"
-        }
-      ]
-    },
-    {
       "id": "silero-vad",
       "display_name": "Silero VAD",
       "files": [

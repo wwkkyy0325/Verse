@@ -54,7 +54,7 @@ verse-app      Tauri 2 shell — Rust backend + web frontend in `ui/`        [bi
 
 Three boundaries justify the splits:
 
-- **All traits live in `verse-core`; only implementations live elsewhere.** `AudioSource`, `Segmenter`, `AsrEngine`, `TextProcessor` and `TextSink` are defined there as pure abstractions. This is what lets the registry (§4.6) hold implementations without `verse-core` ever linking sherpa-onnx, and it is what makes swapping an engine or inserting a text stage a configuration change rather than a code change.
+- **All traits live in `verse-core`; only implementations live elsewhere.** `AudioSource`, `Segmenter`, `AsrEngine` and `TextSink` are defined there as pure abstractions. This is what lets the registry (§4.6) hold implementations without `verse-core` ever linking sherpa-onnx, and it is what makes swapping an engine a configuration change rather than a code change.
 - `verse-model` isolates all network access. This is what makes the offline guarantee structural (§4.5).
 - `verse-audio` and `verse-asr` are the two crates that touch native code — ffmpeg through a child process, sherpa-onnx through FFI. `verse-core` unit tests therefore link neither, and stay fast.
 
@@ -287,13 +287,37 @@ tokenizer directory instead, which the factory hides.
 
 ### 5.4 Punctuation
 
-Paraformer emits bare text — `对我做了介绍啊那么我想说的是呢大家如果对我的研究感兴趣呢嗯` — which is unusable as subtitles.
+**Both registered engines punctuate internally.** There is no punctuation
+stage, no punctuation model, and nothing to configure. That is a change from
+earlier drafts of this document, which described a `TextProcessor` stage and
+a 294 MB CT-Transformer model for the engines that needed one.
 
-SenseVoice punctuates internally, so the default path needs no stage here. That is most of why it is the default: it removes a 294 MB model from the bundle.
+The history is worth one paragraph, because it is the same mistake twice.
+Punctuation was treated as a property of the engine rather than a stage, on
+the grounds that the default engine happened to do it. When a second engine
+was tried, the comparison between them silently compared a two-stage pipeline
+against a one-stage one — and the difference was read as accuracy. The stage
+was built, the comparison was redone properly, and the answer was that
+neither engine needs it: Paraformer lost on enough other axes that it was
+removed rather than accommodated (see `tasks/asr-evaluation.md` §9), and both
+survivors punctuate themselves.
 
-When Paraformer is selected, the stage is `verse_asr::Punctuator`, wrapping `csukuangfj/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12` through sherpa-onnx's `OfflinePunctuation`. No tokens file is needed — the vocabulary is embedded in the ONNX graph.
+So the model is gone, along with `Punctuator` and the stage. A third engine
+that emits bare text would need one again; that is a problem to solve when
+there is such an engine, not before.
 
-It is a `TextProcessor` stage, not a special case wired into the pipeline. Inserting it is a single `TextChain::push` call, which is what keeps this decision reversible.
+**Measured quality, since it is now the only thing deciding this.** Per-mark
+F1 on the conversation subset, from `tasks/asr-evaluation.md`:
+
+| mark | SenseVoice | Qwen3-ASR |
+|---|---|---|
+| 。 | 89.5% | 88.5% |
+| ， | 77.0% | 77.6% |
+| ？ | 90.6% | **95.1%** |
+| ！ | never emitted | emitted |
+
+Commas are the weak mark for both — placed correctly when placed at all, and
+missed roughly a third of the time.
 
 ### 5.5 Phase 2: streaming and translation
 
@@ -490,5 +514,5 @@ P1a is where the risk lives: the model fetcher under real Chinese network condit
 ### Open questions
 
 1. ~~Model bundled or fetched on first launch?~~ **Decided:** one lightweight model ships inside the installer; heavier models are opt-in downloads. See §5.3.
-2. ~~Exact punctuation model repository?~~ **Decided:** `csukuangfj/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12`. See §5.4.
+2. ~~Exact punctuation model repository?~~ **Moot:** both engines punctuate internally, so there is no punctuation model. See §5.4.
 3. ~~Windows audio/video container support in `symphonia`?~~ **Moot:** the decoder is the ffmpeg sidecar, which covers every container ffmpeg does — including video. See §4.7.

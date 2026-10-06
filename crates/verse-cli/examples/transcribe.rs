@@ -6,20 +6,20 @@
 //!
 //! Run:
 //!   cargo run -p verse-cli --example transcribe -- \
-//!       <engine-id> <model-dir> <audio-file> [punct-model]
+//!       <engine-id> <model-dir> <audio-file> 
 //!
 //! `engine-id` is `sensevoice` or `qwen3-asr`.
 
 use std::path::{Path, PathBuf};
 
-use verse_asr::{register_builtin_engines, Punctuator};
+use verse_asr::register_builtin_engines;
 use verse_audio::FfmpegDecoder;
-use verse_core::{AudioFormat, AudioSource, EngineConfig, Registry, TextChain};
+use verse_core::{AudioFormat, AudioSource, EngineConfig, Registry};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.len() < 3 {
-        eprintln!("usage: transcribe <engine-id> <model-dir> <audio-file> [punct-model]");
+        eprintln!("usage: transcribe <engine-id> <model-dir> <audio-file> ");
         eprintln!("       engine-id: sensevoice | qwen3-asr");
         std::process::exit(2);
     }
@@ -27,7 +27,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let engine_id = &args[0];
     let model_dir = PathBuf::from(&args[1]);
     let audio = &args[2];
-    let punct_model = args.get(3);
 
     // Assemble the available engines. Nothing below this line knows which
     // engine it got.
@@ -51,7 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         chunks += 1;
     }
 
-    let mut transcript = engine.finalize()?;
+    let transcript = engine.finalize()?;
 
     eprintln!(
         "decoded {chunks} chunks, {} segment(s)",
@@ -60,12 +59,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Punctuation is a chain stage, not a hard-coded step. SenseVoice needs no
     // stage here; engines that do not punctuate do.
-    if let Some(model) = punct_model {
-        let mut chain = TextChain::new();
-        chain.push(Box::new(Punctuator::load(Path::new(model))?));
-        eprintln!("text stages: {:?}", chain.names());
-        chain.run_transcript(&mut transcript);
-    }
 
     println!("{}", transcript.to_text());
     Ok(())
