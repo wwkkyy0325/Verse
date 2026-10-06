@@ -70,7 +70,7 @@ digest to `d3a1f08e…` and the test fails.
 
 31 tests in the crate, 264 across the workspace, clippy clean.
 
-## [ ] 2. The keeper
+## [x] 2. The keeper
 
 `crates/verse-pipeline/src/keep.rs`: `ModelKeeper` with `preload` (启),
 `status` (待机), `release` (停), and `transcribe`. Identity is the settings
@@ -91,6 +91,41 @@ engine so no weights are needed: reuse twice shows `loads=1`; a changed
 `hotwords` shows `loads=2`; a 50 ms timeout reaches `Unloaded`; dropping joins
 the sweeper; two concurrent callers show `loads=1`; a failing loader publishes
 `JobStarted` then `JobFailed`, in that order.
+
+**Done.** Eleven tests, 42 in the crate. The fake engine moved out of `lib.rs`'s
+test module into `#[cfg(test)] pub(crate) mod testing`, because two test modules
+need it now and a second copy of a fake is a second thing that can drift from
+what it imitates.
+
+`Transcriber::with_engine` computes the **real** digest — only
+`Registry::create_engine` is skipped — so a test watching for reuse is watching
+the same decision the real thing makes, not a stubbed string that would agree
+with anything.
+
+**Two tests were checked to bite**, and both carry a decision rather than a
+behaviour:
+
+- Removing the `JobStarted` publish before a load failure gives
+  `["failed"]` where the test requires `["started", "failed"]`.
+- Making the identity check reuse unconditionally gives `loads=1` where the
+  changed-settings test requires `2` — which is the false reuse the design exists
+  to prevent, reachable in one line of carelessness.
+
+**`the_keeper_can_be_shared_between_threads` is a compiled assertion**, not a
+comment: `ModelKeeper: Send + Sync`. The window hands it to a different thread
+per job and a service would too, and without that bound neither is possible.
+
+**One thing the plan did not anticipate.** `Transcriber` reads its cache policy
+from the request it stored at load, and `settings_digest` does not cover the
+policy — so a keeper reusing one model across callers would serve every later
+job's results under the *first* caller's policy. Rather than document that as a
+footgun, `Transcriber::set_cache_policy` re-points it for every job. It is safe
+after loading precisely because the digest does not cover it, so `settings`
+stays true.
+
+**A naming correction.** The plan called the state `Held`; the code calls it
+`ModelStatus`, because `Held` reads as a value rather than a state and the
+method is `status()`.
 
 ## [ ] 3. The window keeps its model
 

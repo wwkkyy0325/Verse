@@ -11,6 +11,10 @@
 
 mod cache;
 mod coverage;
+mod keep;
+
+#[cfg(test)]
+pub(crate) mod testing;
 
 use std::path::{Path, PathBuf};
 
@@ -22,6 +26,7 @@ use verse_core::{
 };
 
 pub use cache::{from_entry, settings_digest, to_entry, CachePolicy};
+pub use keep::{ModelKeeper, ModelStatus, DEFAULT_IDLE};
 pub use coverage::{
     Coverage, CoverageMeter, GuardSettings, DEFAULT_FLOOR, DEFAULT_MIN_ENERGETIC_SECONDS,
 };
@@ -275,6 +280,19 @@ impl Transcriber {
         self.request.input = input;
     }
 
+    /// Change where this transcriber looks for already-done work.
+    ///
+    /// Per-run, not per-model: which results may be reused is a question about
+    /// the caller, not about the weights. `crate::keep` sets it for every job so
+    /// that a keeper reusing one model across callers cannot serve a job's
+    /// results under a different caller's policy.
+    ///
+    /// Safe to change after loading because the settings digest does not cover
+    /// it — see `cache::settings_digest` — so `settings` stays true.
+    pub fn set_cache_policy(&mut self, cache: CachePolicy) {
+        self.request.cache = cache;
+    }
+
     fn run(
         &mut self,
         job: JobId,
@@ -511,6 +529,7 @@ fn recognize(
 mod tests {
     use super::*;
     use std::time::Duration;
+    use crate::testing::{a_chunk, Fixed};
     use verse_core::{Segment, Subscription};
 
     fn a_transcription(texts: &[&str]) -> Transcription {
@@ -626,34 +645,6 @@ mod tests {
                 other => panic!("unexpected event: {other:?}"),
             };
             assert_eq!(id, JobId(7));
-        }
-    }
-
-    /// An engine that says a fixed thing, so a recognition can be run without
-    /// a model or 228 MB of weights.
-    struct Fixed(Option<Transcript>);
-
-    impl verse_core::AsrEngine for Fixed {
-        fn is_streaming(&self) -> bool {
-            false
-        }
-        fn accept(&mut self, _chunk: &AudioChunk) -> Result<(), Error> {
-            Ok(())
-        }
-        fn poll(&mut self) -> Result<Option<verse_core::TranscriptDelta>, Error> {
-            Ok(None)
-        }
-        fn finalize(&mut self) -> Result<Transcript, Error> {
-            Ok(self.0.take().unwrap_or_default())
-        }
-        fn reset(&mut self) {}
-    }
-
-    fn a_chunk(start_ms: u64, samples: usize) -> AudioChunk {
-        AudioChunk {
-            samples: vec![0.5; samples],
-            format: AudioFormat::TARGET,
-            start: Duration::from_millis(start_ms),
         }
     }
 
