@@ -93,7 +93,18 @@ pub struct Done {
     pub transcript: Transcript,
     /// Where the result was written, once it has been. Kept so the export
     /// buttons can confirm rather than repeat.
+    ///
+    /// Set by the automatic save as well as by *save as*: to anything watching
+    /// the screen, a transcript that has already been written somewhere is the
+    /// same fact however it got there.
     pub exported: Option<PathBuf>,
+    /// Why the automatic save did not happen, when it did not.
+    ///
+    /// The transcript is still here and *save as* still works, so this is not a
+    /// failure of the job — but it is why there is nothing in the output folder,
+    /// and staying quiet about that would leave a person looking for a file
+    /// that was never written.
+    pub save_error: Option<String>,
 }
 
 /// A job that did not finish.
@@ -323,6 +334,19 @@ impl AppState {
     pub fn note_exported(&mut self, path: PathBuf) {
         if let Screen::Done(done) = &mut self.screen {
             done.exported = Some(path);
+            // A later success supersedes an earlier refusal: *save as* having
+            // worked means the transcript is written, and a stale complaint
+            // about the automatic attempt would contradict the screen.
+            done.save_error = None;
+        }
+    }
+
+    /// Record that the automatic save did not happen.
+    ///
+    /// Worded for the person reading it, like every other reason on a screen.
+    pub fn note_save_failed(&mut self, reason: String) {
+        if let Screen::Done(done) = &mut self.screen {
+            done.save_error = Some(reason);
         }
     }
 
@@ -398,6 +422,7 @@ impl AppState {
                     input,
                     transcript: transcript.clone(),
                     exported: None,
+                    save_error: None,
                 });
                 self.job = None;
                 Applied::Screen

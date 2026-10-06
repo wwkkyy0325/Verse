@@ -39,7 +39,7 @@ export type Screen =
   | { kind: "empty" }
   | { kind: "needsModel"; file: string; model: string; download: Download }
   | { kind: "working"; file: string; stopping: boolean }
-  | { kind: "done"; file: string; exported: string | null }
+  | { kind: "done"; file: string; exported: string | null; saveError: string | null }
   | { kind: "failed"; file: string; reason: string; recovery: Recovery };
 
 /** One segment of recognised speech. */

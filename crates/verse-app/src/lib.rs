@@ -15,6 +15,7 @@
 //! benchmark so that all three are measuring and shipping the same thing.
 
 mod about;
+mod autosave;
 mod bridge;
 
 

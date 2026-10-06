@@ -15,7 +15,7 @@ use std::time::Duration;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
-use verse_core::{CancelToken, Event, EventBus, JobId, Segment, Subscription};
+use verse_core::{CancelToken, Event, EventBus, JobId, Segment, Subscription, Transcript};
 use verse_pipeline::{Request, Transcriber};
 use crate::state::{AppState, Applied, Recovery, Screen};
 
@@ -114,6 +114,12 @@ pub enum Update {
 #[serde(tag = "state", rename_all = "camelCase")]
 pub enum DownloadView {
     Idle,
+    // Per-variant, and it has to be on every variant that has a multi-word
+    // field: `rename_all` on the enum renames the *variants*, not their fields.
+    // Without this the window reads `download.receivedBytes`, finds nothing,
+    // and shows a progress bar stuck at zero with "NaN MB" beside it — which
+    // is exactly what it did.
+    #[serde(rename_all = "camelCase")]
     Fetching {
         file: String,
         received_bytes: u64,
@@ -169,11 +175,18 @@ pub enum ScreenView {
         /// True once the user has asked to stop and the job has not yet.
         stopping: bool,
     },
+    #[serde(rename_all = "camelCase")]
     Done {
         file: String,
         /// Where the transcript was written, once it has been. The window uses
         /// it to stop offering an export that has already happened.
         exported: Option<String>,
+        /// Why it was not written automatically, when it was not.
+        ///
+        /// The transcript is on screen either way and *save as* still works —
+        /// this says where the result did not go, which is the one thing the
+        /// window cannot work out for itself.
+        save_error: Option<String>,
     },
     Failed {
         file: String,
@@ -226,6 +239,7 @@ pub fn view_of(screen: &Screen) -> ScreenView {
         Screen::Done(done) => ScreenView::Done {
             file: file_label(&done.input),
             exported: done.exported.as_ref().map(|path| file_label(path)),
+            save_error: done.save_error.clone(),
         },
         Screen::Failed(failed) => ScreenView::Failed {
             file: file_label(&failed.input),
@@ -261,24 +275,47 @@ pub fn spawn_forwarder(app: AppHandle, subscription: Subscription) {
             continue;
         };
 
-        let update = {
+        let (update, unsaved) = {
             let app_state = app.state::<App>();
             let mut state = app_state.state.lock().expect("state mutex poisoned");
 
+            // One match rather than two: `Applied::Segment` carries the segment
+            // by value, so matching twice would move out of it the first time.
             match state.apply(&event) {
-                Applied::Nothing => None,
-                Applied::Screen => Some(Update::Screen {
-                    screen: view_of(state.screen()),
-                }),
-                Applied::Segment(Segment { start, end, text, .. }) => Some(Update::Segment {
-                    start_ms: start.as_millis() as u64,
-                    end_ms: end.as_millis() as u64,
-                    text,
-                }),
-                Applied::Cleared => Some(Update::Cleared),
-                Applied::Progress { position, .. } => Some(Update::Progress {
-                    elapsed_ms: position.as_millis() as u64,
-                }),
+                Applied::Nothing => (None, None),
+                Applied::Screen => {
+                    let update = Some(Update::Screen {
+                        screen: view_of(state.screen()),
+                    });
+
+                    // The finished transcript, if it has just arrived and
+                    // nobody has written it anywhere. Taken here and written
+                    // below, and deliberately not written *here*: this holds
+                    // the state lock, and a save into a synchronised Documents
+                    // folder can take long enough to notice.
+                    let unsaved = state.finished().and_then(|done| {
+                        done.exported
+                            .is_none()
+                            .then(|| (done.input.clone(), done.transcript.clone()))
+                    });
+
+                    (update, unsaved)
+                }
+                Applied::Segment(Segment { start, end, text, .. }) => (
+                    Some(Update::Segment {
+                        start_ms: start.as_millis() as u64,
+                        end_ms: end.as_millis() as u64,
+                        text,
+                    }),
+                    None,
+                ),
+                Applied::Cleared => (Some(Update::Cleared), None),
+                Applied::Progress { position, .. } => (
+                    Some(Update::Progress {
+                        elapsed_ms: position.as_millis() as u64,
+                    }),
+                    None,
+                ),
             }
         };
 
@@ -287,7 +324,44 @@ pub fn spawn_forwarder(app: AppHandle, subscription: Subscription) {
         if let Some(update) = update {
             let _ = app.emit(UPDATE, update);
         }
+
+        if let Some((input, transcript)) = unsaved {
+            autosave(&app, &input, &transcript);
+        }
     });
+}
+
+/// Write a finished transcript out, and tell the window what happened.
+///
+/// Runs on the forwarding thread, immediately after `TranscriptFinal` has been
+/// applied. That ordering is the reason it is here rather than on the worker
+/// that did the recognition: the worker would race the forwarder, and the
+/// screen would end up recording a save that had not happened yet, or losing
+/// one that had.
+fn autosave(app: &AppHandle, input: &std::path::Path, transcript: &Transcript) {
+    let roots = verse_store::Roots::from_env();
+    let rendered = verse_core::ExportFormat::Srt.render(transcript);
+
+    let outcome = crate::autosave::save_into(
+        &verse_store::output_dir(&roots),
+        &verse_store::data_dir(&roots).join("outputs.json"),
+        input,
+        &rendered,
+    );
+
+    {
+        let app_state = app.state::<App>();
+        let mut state = app_state.state.lock().expect("state mutex poisoned");
+
+        match outcome {
+            crate::autosave::Saved::Written(path) => state.note_exported(path),
+            crate::autosave::Saved::Refused(why) => state.note_save_failed(why),
+        }
+    }
+
+    // So the screen gains the path or the reason. Without this the window would
+    // show the transcript and never mention either.
+    push_screen(app);
 }
 
 // ---------------------------------------------------------------- from the window
@@ -447,6 +521,99 @@ mod tests {
     }
 
     #[test]
+    fn a_download_sends_camel_case_byte_counts() {
+        // The test that was missing, and its absence had a cost. The window
+        // reads `download.receivedBytes`; without a per-variant `rename_all`
+        // the field arrived as `received_bytes`, nothing on either side
+        // complained, and the progress bar sat at zero saying "NaN MB".
+        //
+        // `rename_all` on an enum renames its variants. It does not touch
+        // their fields, which is the whole trap.
+        let value = serde_json::to_value(Update::Download {
+            download: DownloadView::Fetching {
+                file: "model.onnx".to_string(),
+                received_bytes: 1024,
+                total_bytes: Some(2048),
+            },
+        })
+        .expect("serializes");
+
+        let download = &value["download"];
+        assert!(download.get("receivedBytes").is_some(), "got: {value}");
+        assert!(download.get("totalBytes").is_some(), "got: {value}");
+        assert!(
+            download.get("received_bytes").is_none(),
+            "snake_case reached the window: {value}"
+        );
+        // And the variant name itself, which the enum-level rename does cover.
+        assert_eq!(download["state"], json!("fetching"));
+    }
+
+    #[test]
+    fn every_multi_word_field_on_the_wire_is_camel_case() {
+        // A guard against the same mistake on the next field somebody adds.
+        // Serialises one of everything and looks for an underscore in a key.
+        fn keys_with_underscores(value: &serde_json::Value, found: &mut Vec<String>) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    for (key, nested) in map {
+                        if key.contains('_') {
+                            found.push(key.clone());
+                        }
+                        keys_with_underscores(nested, found);
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    for item in items {
+                        keys_with_underscores(item, found);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let samples = vec![
+            Update::Download {
+                download: DownloadView::Fetching {
+                    file: "a.onnx".to_string(),
+                    received_bytes: 1,
+                    total_bytes: None,
+                },
+            },
+            Update::Download {
+                download: DownloadView::Ready,
+            },
+            Update::Screen {
+                screen: ScreenView::Done {
+                    file: "a.wav".to_string(),
+                    exported: Some("a.srt".to_string()),
+                    save_error: Some("why not".to_string()),
+                },
+            },
+            Update::Screen {
+                screen: ScreenView::Working {
+                    file: "a.wav".to_string(),
+                    stopping: true,
+                },
+            },
+            Update::Segment {
+                start_ms: 0,
+                end_ms: 1,
+                text: "x".to_string(),
+            },
+            Update::Progress { elapsed_ms: 1 },
+            Update::Cleared,
+        ];
+
+        let mut found = Vec::new();
+        for sample in samples {
+            keys_with_underscores(&serde_json::to_value(sample).expect("serializes"), &mut found);
+        }
+
+        assert!(found.is_empty(), "snake_case keys on the wire: {found:?}");
+    }
+
+    #[test]
     fn a_done_screen_reports_whether_it_has_been_written_out() {
         // The window uses this to stop offering an export that has already
         // happened, so `null` and a path have to be distinguishable.
@@ -454,19 +621,23 @@ mod tests {
             screen: ScreenView::Done {
                 file: "会议.m4a".to_string(),
                 exported: None,
+                save_error: None,
             },
         })
         .expect("serializes");
 
         assert_eq!(
             unsaved,
-            json!({ "kind": "screen", "screen": { "kind": "done", "file": "会议.m4a", "exported": null } })
+            json!({ "kind": "screen", "screen": {
+                "kind": "done", "file": "会议.m4a", "exported": null, "saveError": null
+            } })
         );
 
         let saved = serde_json::to_value(Update::Screen {
             screen: ScreenView::Done {
                 file: "会议.m4a".to_string(),
                 exported: Some("会议.srt".to_string()),
+                save_error: None,
             },
         })
         .expect("serializes");
@@ -543,6 +714,7 @@ mod tests {
                 input: PathBuf::from("a.wav"),
                 transcript: Default::default(),
                 exported: None,
+                save_error: None,
             }),
             Screen::Failed(Failed {
                 input: PathBuf::from("a.wav"),

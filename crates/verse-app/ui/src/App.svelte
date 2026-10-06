@@ -187,8 +187,12 @@
   async function writeTranscript() {
     modelError = null;
 
+    // The name it already has, when it has one, so the copy lands beside its
+    // own record rather than under a second name for the same thing.
     const suggested =
-      screen.kind === "done" ? screen.file.replace(/\.[^.]*$/, "") + ".srt" : "字幕.srt";
+      screen.kind === "done"
+        ? (screen.exported ?? screen.file.replace(/\.[^.]*$/, "") + ".srt")
+        : "字幕.srt";
 
     const chosen = await save({
       defaultPath: suggested,
@@ -318,15 +322,20 @@
     {#if screen.kind === "done"}
       <footer class="flex shrink-0 items-center gap-3 border-t px-6 py-3">
         <span class="text-muted-foreground text-xs">
-          完成 · 共 {segments.length} 段
+          完成 · 共 {segments.length} 段{#if screen.exported}
+            · 已保存到 {screen.exported}{/if}
         </span>
+        {#if screen.saveError}
+          <!-- Not a failure of the job: the transcript is here and 另存为 still
+               works. It says the result is not in the output folder, which is
+               the one thing the window cannot work out for itself. -->
+          <span class="text-destructive text-xs">未能自动保存：{screen.saveError}</span>
+        {/if}
         {#if modelError}
           <span class="text-destructive text-xs">{modelError}</span>
         {/if}
         <span class="flex-1"></span>
-        <Button size="sm" onclick={() => void writeTranscript()}>
-          {screen.exported ? "再导出一次" : "导出字幕"}
-        </Button>
+        <Button variant="ghost" size="sm" onclick={() => void writeTranscript()}>另存为…</Button>
         <Button variant="ghost" size="sm" onclick={() => void reset()}>再来一个</Button>
       </footer>
     {/if}

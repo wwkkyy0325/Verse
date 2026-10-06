@@ -366,7 +366,7 @@ test.
 Each of the three was invisible to `cargo test` and to clippy, and each was
 obvious within seconds of running the command.
 
-## [ ] 7. GUI: automatic saving
+## [x] 7. GUI: automatic saving
 
 Auto-save when a `TranscriptFinal` produces `Done`, **on the forwarder thread**
 so the ordering against the event is guaranteed — on the worker thread it would
@@ -379,6 +379,41 @@ still works.
 wire. Manual, recorded: drop a file, a transcript lands in `<Documents>/Verse`
 with no dialog; re-drop it and confirm no `(2)`; point `VERSE_OUTPUT` at a
 read-only directory and confirm the error is visible and 另存为 still saves.
+
+**Done.** The save decision lives in `crates/verse-app/src/autosave.rs` and
+both directories are passed in rather than read from the environment, so seven
+tests can describe a machine — including a Documents folder that cannot be
+written to, which is the case that matters and the one impossible to arrange on
+the machine running the tests. It runs on the forwarding thread, immediately
+after `TranscriptFinal` is applied, and writes outside the state lock: the
+worker thread would race the forwarder, and a save into a synchronised folder
+can take long enough to notice.
+
+**A real bug fell out of writing the contract test, and it was mine.**
+
+`ScreenView::Done`'s new `save_error` serialised as `save_error`, not
+`saveError`. The reason is a trap: **`rename_all` on an enum renames its
+variants, not their fields** — every variant with a multi-word field needs its
+own attribute. Checking the neighbours turned up the same mistake in
+`DownloadView::Fetching`, which has been there since the download screen was
+built two rounds ago: the backend sends `received_bytes` and `total_bytes`, the
+window reads `download.receivedBytes` and `download.totalBytes`, and the
+progress bar has been sitting at zero saying **"NaN MB"** ever since. Neither
+side complained, because nothing connected them.
+
+Both are fixed, and two tests now pin it: one for the download, one that
+serialises one of everything and fails if any key on the wire contains an
+underscore. Both were checked to bite — removing the attribute again fails both.
+
+That is the second time in this round that a bug survived `cargo test`, clippy
+and a careful reading, and was caught only by looking at what the code actually
+produces.
+
+What is *not* verified: that the window shows any of it. Every path in
+`autosave` is unit-tested, the wire format is pinned, and the frontend
+type-checks and builds — but "the transcript appeared in Documents and the
+error is visible when it does not" needs a person at the window, and that is
+still step 4 of `p1b-screens.md` as much as it is this one.
 
 ## [ ] 8. Consolidation
 
