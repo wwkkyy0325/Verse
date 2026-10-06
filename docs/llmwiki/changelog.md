@@ -510,3 +510,74 @@ second is partly ITN again.
 
 **Also outstanding:** the AISHELL tail-truncation seen earlier (供求关系 →
 供求, 消费环境 → 消费) is the same boundary problem in a different dataset.
+
+## 2026-10-06 — Across domains, and the reference was wrong
+
+Two datasets was enough to find the threshold. It was not enough to say
+anything about accuracy, so five more domains were scored — meeting, phone
+call, documentary, live commerce and a second conversation set, 300
+utterances each.
+
+The first table said the worst domain was five times worse than read speech.
+It was not. The measurement was wrong.
+
+**`target_text` is not a transcript.** It is formal written Chinese — filler
+removed, phrasing rewritten, expressions normalised — supplied by the dataset
+to train text-normalisation models. Scoring recognition against it measures
+the recogniser *plus a rewriting stage this product does not have*, and marks
+it down for faithfully reproducing what was said:
+
+```
+ref  颜色、色料以及上唇效果都非常出色，而且其切面很大，便于涂抹。
+got  颜色啊、色料啊，包括它的上唇的效果啊，真的非常厉害。
+```
+
+The recogniser is right. The reference is a different task. The dataset
+carries `original_text` — the verbatim spoken form — for exactly this reason,
+and `extract.py` takes `--reference` to choose. Both were extracted and scored
+against the same audio:
+
+| dataset | vs written | vs verbatim | gap |
+|---|---|---|---|
+| conversation | 6.66% | **5.00%** | −1.7 |
+| meeting | 10.67% | **7.64%** | −3.0 |
+| phone call | 12.16% | **8.19%** | −4.0 |
+| documentary | 14.71% | **6.93%** | −7.8 |
+| live commerce | **37.30%** | **11.31%** | **−26.0** |
+
+**Twenty-six points of the worst number were the yardstick.** The real spread
+is 5.00% to 11.31%, which is a range someone can act on.
+
+This is the second time in two days that a measurement mistake looked like a
+product defect — the first was counting ITN as error, worth 41% of a rate.
+Both were found by reading the failures rather than the number.
+
+**The arrangement that follows:** recognition is scored against
+`original_text`, punctuation against `target_text`. That is not a compromise.
+`punct.rs` compares marks only where both sides agree on the character, so
+rewritten phrasing is skipped rather than penalised — the punctuation figures
+were never affected by this, and the character rates were affected badly.
+
+The tool now takes several manifests and prints the table itself, so the
+spread is the default view rather than something assembled by hand.
+
+**A label to distrust:** `ZH00007` is named *sports commentary* and contains,
+in the sampled rows, live commerce — a presenter recommending cosmetics. The
+audio is what it is; the label is the dataset's.
+
+### What the corrected numbers say
+
+| dataset | CER | exact | punct F1 |
+|---|---|---|---|
+| conversation | 5.00% | 59.0% | 83.2% |
+| documentary | 6.93% | 34.3% | 73.2% |
+| meeting | 7.64% | 47.3% | 88.2% |
+| phone call | 8.19% | 30.7% | 76.5% |
+| live commerce | 11.31% | 27.7% | 66.3% |
+
+Phone calls and live commerce are the hard cases, and the audio explains both:
+narrowband, and fast overlapping speech over music.
+
+Meeting punctuation is the **best** of the five, which is the opposite of what
+its character rate suggests. Meetings are hard to hear and easy to punctuate,
+because the pauses are real.

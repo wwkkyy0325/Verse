@@ -118,24 +118,102 @@ the cost of coarser subtitle lines.
 CER and punctuation F1, since the two pull in opposite directions here. Make
 it settable the same way the threshold is.
 
-## [ ] 6. More datasets
+## [x] 6. A single average was hiding a factor of five
 
-Only two so far, and they disagree in ways that matter. Speechio-Formal has 27
-subsets and the rest are undownloaded:
+Six datasets now, 300 utterances each. The result that matters is not any one
+number but the spread:
 
-| subset | domain | subset | domain |
+| dataset | CER | exact | punct F1 |
 |---|---|---|---|
-| ZH00007 | sports commentary | ZH00020/21 | **meeting** |
-| ZH00010/11 | news broadcast | ZH00022/23 | **phone call** |
-| ZH00017 | court recording | ZH00024/25 | medical |
-| ZH00018/19 | conversation | ZH00026 | education |
+| AISHELL (read news) | 6.96% | 65.7% | — |
+| conversation | 6.66% | 51.3% | 83.2% |
+| meeting | 10.67% | 30.3% | 88.2% |
+| phone call | 12.16% | 20.3% | 76.5% |
+| **sports commentary** | **37.30%** | **7.0%** | 66.3% |
+| documentary | 14.71% | 20.7% | 73.2% |
 
-Meeting and phone are the two that were said earlier to be unavailable. They
-are right here.
+**A factor of five between the best and worst condition.** Any single figure
+quoted for this recogniser would be describing one of these and hiding the
+rest — which is exactly how 8.44% came to look like an answer.
 
-**Verify:** score every domain and report per-domain. A single number across
-all of them would repeat the mistake the AISHELL run made — a clean-read
-average that hides the conditions where the product is actually used.
+The tool now takes several manifests and prints this table, so the spread is
+the default view rather than something assembled by hand.
+
+## [x] 7. The wrong reference was being scored against
+
+The 37% was real but it was not measuring recognition. Reading the failures:
+
+```
+ref  颜色、色料以及上唇效果都非常出色，而且其切面很大，便于涂抹。
+got  颜色啊、色料啊，包括它的上唇的效果啊，真的非常厉害。
+```
+
+`target_text` is not a transcript. It is *formal written Chinese* — filler
+removed, phrasing rewritten, expressions normalised — supplied by the dataset
+specifically for training text-normalisation models. Scoring recognition
+against it measures the recogniser **plus a rewriting stage that does not
+exist in this product**, and marks the recogniser down for faithfully
+reproducing what was said.
+
+The dataset carries `original_text` for exactly this reason: the verbatim
+spoken form. `extract.py` takes `--reference`, and both are now extracted
+side by side.
+
+This also means the early numbers are worth re-reading. The conversation
+subset was scored against `target_text` too.
+
+**Verified.** Both reference styles, same audio, 300 utterances each:
+
+| dataset | vs written reference | vs verbatim reference | gap |
+|---|---|---|---|
+| conversation | 6.66% | **5.00%** | −1.7 |
+| meeting | 10.67% | **7.64%** | −3.0 |
+| phone call | 12.16% | **8.19%** | −4.0 |
+| documentary | 14.71% | **6.93%** | −7.8 |
+| live commerce | **37.30%** | **11.31%** | **−26.0** |
+
+The worst domain was not five times worse than read speech. It was 1.6 times
+worse, and the rest of the gap was the yardstick.
+
+**The arrangement that follows:** recognition is scored against
+`original_text`; punctuation is scored against `target_text`. That is not a
+compromise — `punct.rs` compares marks only at positions where both sides
+agree on the character, so a written reference's rewritten phrasing is
+skipped rather than counted. The punctuation numbers were never affected by
+this; the character rates were, badly.
+
+Also noted: `ZH00007` is labelled *sports commentary* and contains, in the
+sampled rows, live commerce — a host recommending cosmetics. The label is the
+dataset's; the content is what it is. Either way it is not read speech, and
+the label is worth trusting less than the audio.
+
+### Corrected numbers
+
+Every utterance in five domains, 5049 of them. Recognition against the
+verbatim reference; punctuation against the written one, which is the only
+one that has any:
+
+| dataset | utterances | CER | exact | punct F1 |
+|---|---|---|---|---|
+| conversation | 898 | **4.80%** | 63.4% | 83.0% |
+| meeting | 1559 | **6.95%** | 48.4% | **85.8%** |
+| documentary | 856 | **7.16%** | 35.2% | 74.5% |
+| phone call | 996 | **8.42%** | 28.8% | 76.5% |
+| live commerce | 740 | **11.30%** | 25.0% | 66.5% |
+
+Scoring 300 instead of the full set changes no figure by more than 0.7
+points, so sample size was never the problem — the reference was.
+
+Two things the domain breakdown shows that a single figure could not:
+
+- **Recognition spread is 4.80% to 11.30%.** Phone calls and live commerce
+  are the hard cases, and the audio explains both: narrowband, and fast
+  overlapping speech over music.
+- **Punctuation and recognition are not the same difficulty.** They mostly
+  track each other, but documentary is the third-best to hear and the
+  second-worst to punctuate — it is narrated in long fluent clauses with
+  little pause to go on. Neither number predicts the other, which is the
+  argument for measuring both.
 
 ## [ ] 7. Exclamation marks
 
