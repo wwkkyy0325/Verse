@@ -163,7 +163,7 @@ service can pass its own configuration. `0` pins the model; an unparseable value
 falls back **and says so**, because silently ignoring a switch somebody set is
 how they conclude the switch does not work.
 
-## [ ] 4. Measure
+## [x] 4. Measure
 
 `crates/verse-pipeline/examples/reuse.rs`: the same clip twice, once loading per
 file as the window does today and once through one keeper, printing per-file
@@ -173,6 +173,35 @@ milliseconds and a load counter.
 must report `loads=1` in both phases. If it does not, the instrument is broken
 and the timings mean nothing. `CachePolicy::Disabled` in both, because a cache
 hit in the second phase would be measuring the cache.
+
+**Done, and the result is unambiguous.**
+
+The instrument first, because everything below depends on it:
+
+```
+--times 1     loads: A=1 B=1
+              instrument: both phases loaded once, as they must at --times 1
+```
+
+Then five files:
+
+```
+A  load per file (what the window did)
+   per file: 1549, 1501, 1711, 1512, 1547  ms
+   5 loads, 7820 ms total, 1564 ms average
+
+B  one keeper         (what it does now)
+   per file: 1564,  284,  306,  276,  309  ms
+   1 load, 2739 ms total, 547 ms average
+```
+
+Phase A pays about 1560 ms for every file. Phase B pays it once and then about
+290 ms. Five files take **7820 ms against 2739 ms**, and the saving per file
+after the first is 1274 ms — 81% of it.
+
+The shape matters more than the total: A is flat at 1.56 s per file however many
+there are, while B is `1564 + (N−1) × 290`. Ten files would be 15.6 s against
+4.2 s.
 
 ## [ ] 5. Record
 
