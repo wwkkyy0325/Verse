@@ -310,7 +310,7 @@ was not set for that invocation. It happened to be empty and reported
 `0 transcriptions`, so nothing was lost — but a destructive command run without
 pointing it somewhere disposable is a habit worth not forming.
 
-## [ ] 6. CLI default output, and the contract fallout
+## [x] 6. CLI default output, and the contract fallout
 
 `resolve_outputs` takes the resolved default directory. `-o -` and an explicit
 `-o` are unchanged. The `a.wav`/`a.mp3` refusal becomes a serial suffix, and
@@ -328,6 +328,43 @@ the old default is worse than no doc.
 re-running creates no `(2)`; a second source with the same stem creates
 `zh (2).srt`; `-o -` still writes to stdout. A test asserts the usage text
 names the default directory, so help cannot drift from the code.
+
+**Done — and running it found three bugs that reading it did not.**
+
+```
+same file, run 1 -> zh.srt
+same file, run 2 -> zh.srt
+same file, run 3 -> zh.srt
+a DIFFERENT file, same basename -> zh (2).srt
+```
+
+Three runs leave one file. `-o -` still writes to stdout, an explicit `-o
+<file>` with one input is still used verbatim, and `--json` reports the path it
+chose. `llms.txt`, `README.md` and the usage text moved in this commit.
+
+**Bug one, found by the first end-to-end run.** The ownership record was
+loaded, used, and never saved, so every run looked like a first run and the
+directory filled with `zh.srt`, `zh (2).srt`, `zh (3).srt`. The record is now
+written before the transcript is, so a claim is durable even if the run is
+interrupted, and a failure to write it is reported rather than swallowed —
+because the difference is silent accumulation.
+
+**Bug two, found by running it again after that fix.** `prune()` was called
+just before the save, and `prune` drops entries whose file does not exist.
+Nothing has been written at that point, so it erased exactly the claims that
+had just been made. Pruning now happens on the way in, never on the way out.
+
+**Bug three, found by the rewritten tests.** `verse-store`'s `is_free` asked
+the filesystem whether a name was taken, and during planning nothing is on disk
+yet — so `2024/会议.m4a` and `2025/会议.m4a` in one batch were both handed
+`会议.srt`. The record is now consulted first: a name claimed by another source
+is taken whether or not a file has appeared at it, and an unclaimed name is
+taken only if something is actually there. That is the correct precedence for a
+caller that resolves a whole batch before writing any of it, and it has its own
+test.
+
+Each of the three was invisible to `cargo test` and to clippy, and each was
+obvious within seconds of running the command.
 
 ## [ ] 7. GUI: automatic saving
 

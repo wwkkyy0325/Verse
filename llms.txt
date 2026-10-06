@@ -25,7 +25,13 @@ files than one process per file.
 
 ### transcribe options
 
-    -o, --output <path>    output file, or directory when there are several inputs
+    -o, --output <path>    output file, or directory when there are several inputs.
+                           Without it, transcripts go to <Documents>/Verse
+                           (VERSE_OUTPUT overrides). One input and a path means
+                           that file; several inputs mean that directory.
+    --no-cache             recognise even if the result is already cached;
+                           VERSE_CACHE_VERIFY=full hashes whole files rather than
+                           both ends, VERSE_NO_CACHE=1 turns the cache off
         --format <srt|txt> srt (default) or txt
         --engine <id>      sensevoice (default) or qwen3-asr
         --models <dir>     model root, default `models`

@@ -39,19 +39,27 @@ The build downloads a prebuilt sherpa-onnx archive; behind a slow link, see
 
 ```console
 $ verse model fetch sensevoice
-$ verse transcribe meeting.m4a -o meeting.srt
-$ verse transcribe recordings/ -o subtitles/          # a whole directory
+$ verse transcribe meeting.m4a                        # writes <Documents>/Verse/meeting.srt
+$ verse transcribe recordings/                        # every recording, into that one folder
+$ verse transcribe meeting.m4a -o meeting.srt         # or say exactly where
 $ verse transcribe a.m4a --engine qwen3-asr           # the more accurate one
 ```
+
+Without `-o`, transcripts collect in a `Verse` folder inside your Documents.
+Run the same command twice and the second run replaces the first's file rather
+than making a copy; two different recordings with the same name get numbered
+apart. Set `VERSE_OUTPUT` to put them somewhere else.
 
 `verse --help` lists everything. The parts worth knowing:
 
 | flag | what it does |
 |---|---|
+| `-o, --output <path>` | a file, or a directory when there are several inputs |
 | `--json` | one JSON document on stdout; everything else stays on stderr |
 | `-j, --jobs <n>` | files at once. Each worker loads its own model — about 250 MB for SenseVoice, 1 GB for Qwen3 |
 | `--hotwords <terms>` | domain vocabulary, so `球拍` is not heard as `酒吧`. Qwen3 only |
 | `--fail-fast` | stop at the first file that fails instead of finishing the batch |
+| `--no-cache` | transcribe again even though the result is already cached |
 
 ## For a program driving it
 

@@ -192,11 +192,19 @@ pub fn destination(
 const MAX_SERIAL: u32 = 999;
 
 /// Whether a path can be written without displacing anything but this source.
+///
+/// The record is consulted **before** the filesystem, and that order is the
+/// whole point. A batch resolves every name before anything is written, so
+/// asking the filesystem alone would say "nothing is there" for all of them and
+/// hand two inputs — `2024/会议.m4a` and `2025/会议.m4a` — the same filename.
+/// A name already claimed by another source is taken whether or not a file has
+/// appeared at it yet; a name nobody has claimed is taken only if something is
+/// actually there.
 fn is_free(path: &Path, source: &FileId, ownership: &Ownership) -> bool {
-    if !path.exists() {
-        return true;
+    match ownership.source_of(path) {
+        Some(owner) => owner == source.key(),
+        None => !path.exists(),
     }
-    ownership.source_of(path) == Some(source.key().as_str())
 }
 
 /// Build a filename, optionally numbered.
@@ -300,6 +308,35 @@ mod tests {
         let second = destination(&out, "会议".as_ref(), "srt", &second_source, &ownership);
         assert_eq!(second.path, out.join("会议 (2).srt"));
         assert_eq!(second.serial, Some(2));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn two_sources_are_numbered_even_before_anything_is_written() {
+        // A batch resolves every name before it writes any of them, so a check
+        // that only asks the filesystem says "free" to all of them and hands
+        // two recordings the same filename. The record has to be what decides.
+        let dir = scratch("output-planned");
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).expect("out dir");
+
+        let first_source = file(&dir, "2024/会议.m4a");
+        let second_source = file(&dir, "2025/会议.m4a");
+        let mut ownership = Ownership::default();
+
+        let first = destination(&out, "会议".as_ref(), "srt", &first_source, &ownership);
+        ownership.record(&first_source, &first.path);
+        let second = destination(&out, "会议".as_ref(), "srt", &second_source, &ownership);
+        ownership.record(&second_source, &second.path);
+
+        assert_eq!(first.path, out.join("会议.srt"));
+        assert_eq!(
+            second.path,
+            out.join("会议 (2).srt"),
+            "nothing has been written yet, and the second name is still taken"
+        );
+        assert_eq!(std::fs::read_dir(&out).expect("list").count(), 0);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -451,6 +488,35 @@ mod tests {
 
         let moved = destination(&second_out, "会议".as_ref(), "srt", &source, &ownership);
         assert_eq!(moved.path, second_out.join("会议.srt"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_claim_survives_a_save_and_a_reload_without_the_file_existing() {
+        // The order the command line needs: record, save, and only then write.
+        // A caller that prunes between the record and the save erases the claim
+        // it just made, because no transcript has been written yet — and then
+        // every run looks like a first run and the output directory fills with
+        // numbered copies. This pins the property, not the order, so the store
+        // stays usable from a caller that writes later.
+        let dir = scratch("output-claim-survives");
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).expect("out dir");
+        let source = file(&dir, "会议.m4a");
+
+        let mut ownership = Ownership::default();
+        let choice = destination(&out, "会议".as_ref(), "srt", &source, &ownership);
+        ownership.record(&source, &choice.path);
+        ownership.save(&dir.join("outputs.json")).expect("save");
+
+        // Nothing was written, and a reload still knows where it belongs.
+        assert!(!choice.path.exists());
+        let reloaded = Ownership::load(&dir.join("outputs.json"));
+        let again = destination(&out, "会议".as_ref(), "srt", &source, &reloaded);
+
+        assert_eq!(again.path, choice.path);
+        assert_eq!(again.serial, None);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

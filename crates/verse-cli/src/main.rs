@@ -16,6 +16,7 @@ use std::time::Instant;
 use verse_core::{CancelToken, ErrorKind, EventBus, ExportFormat, HardwareProfile, JobId};
 use verse_model::{Catalog, DownloadState, Downloader};
 use verse_pipeline::{GuardSettings, Request, Transcriber};
+use verse_store::{FileId, Ownership};
 
 const DEFAULT_ENGINE: &str = "sensevoice";
 const DEFAULT_MODELS_DIR: &str = "models";
@@ -338,14 +339,15 @@ fn resolve_outputs(
     inputs: &[PathBuf],
     output: Option<&Path>,
     format: ExportFormat,
+    default_dir: &Path,
+    ownership: &mut Ownership,
 ) -> Result<Vec<PathBuf>, Failure> {
     let stdout = Path::new("-");
 
-    if let [only] = inputs {
-        return Ok(vec![match output {
-            Some(path) => path.to_path_buf(),
-            None => only.with_extension(format.extension()),
-        }]);
+    // One input and an explicit path: that path, verbatim. Nothing here has an
+    // opinion about a name the caller chose.
+    if let ([_only], Some(path)) = (inputs, output) {
+        return Ok(vec![path.to_path_buf()]);
     }
 
     if let Some(path) = output {
@@ -374,28 +376,44 @@ fn resolve_outputs(
         }
     }
 
-    let planned: Vec<PathBuf> = inputs
-        .iter()
-        .map(|input| match output {
-            Some(dir) => dir
-                .join(input.file_stem().unwrap_or_default())
-                .with_extension(format.extension()),
-            None => input.with_extension(format.extension()),
-        })
-        .collect();
+    let dir = output.unwrap_or(default_dir);
 
-    // Two inputs differing only by extension — `a.wav` and `a.mp3` — would
-    // write to the same path. Caught here, before anything is recognised,
-    // because the alternative is discovering it after one transcript has
-    // already overwritten the other.
-    for (i, path) in planned.iter().enumerate() {
-        if let Some(j) = planned[..i].iter().position(|earlier| earlier == path) {
-            return Err(Failure::usage(format!(
-                "'{}' and '{}' would both be written to '{}'; rename one or use -o",
-                inputs[j].display(),
-                inputs[i].display(),
-                path.display()
-            )));
+    let mut planned = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        let stem = input.file_stem().unwrap_or_default();
+
+        // Named through the ownership record when the input can be identified,
+        // so that a re-run replaces its own transcript and a *different*
+        // recording with the same name gets a numbered one instead of
+        // destroying somebody else's work. That matters far more here than it
+        // did when output sat beside its input, because one output directory
+        // holds every recording the user has.
+        match FileId::of(input) {
+            Ok(source) => {
+                let choice =
+                    verse_store::destination(dir, stem, format.extension(), &source, ownership);
+                ownership.record(&source, &choice.path);
+
+                if let Some(n) = choice.serial {
+                    // Said out loud. A filename that changed without anybody
+                    // being told is how a script silently starts reading the
+                    // wrong file.
+                    eprintln!(
+                        "{} already has a transcript here; writing {} ({n})",
+                        input.display(),
+                        choice.path.display()
+                    );
+                }
+
+                planned.push(choice.path);
+            }
+            // Cannot identify it, so cannot claim a name for it. A plain name
+            // is the safe answer: it is what the caller would have got before
+            // any of this existed.
+            Err(_) => planned.push(
+                dir.join(stem)
+                    .with_extension(format.extension()),
+            ),
         }
     }
 
@@ -405,7 +423,10 @@ fn resolve_outputs(
 fn transcribe_usage() -> String {
     let mut s = String::from("usage: verse transcribe <file|dir>... [options]\n\noptions:\n");
     s.push_str("  -o, --output <path>    Output file, or a directory for several inputs\n");
-    s.push_str("                         (default: each input keeps its name, extension swapped)\n");
+    s.push_str(&format!(
+        "                         (default: {})\n",
+        verse_store::output_dir(&verse_store::Roots::from_env()).display()
+    ));
     s.push_str("      --format <srt|txt> Output format (default: srt)\n");
     s.push_str(&format!(
         "      --engine <id>      Engine (default: {DEFAULT_ENGINE})\n"
@@ -436,17 +457,60 @@ fn transcribe(options: &TranscribeOptions) -> Result<(), Failure> {
 
     let inputs = expand_inputs(&options.inputs)?;
     let format = options.format.unwrap_or(ExportFormat::Srt);
-    let outputs = resolve_outputs(&inputs, options.output.as_deref(), format)?;
 
-    // One directory holding several transcripts has to exist first; the
-    // single-input case writes beside a file that is already there.
-    if let (Some(dir), true) = (&options.output, inputs.len() > 1) {
-        std::fs::create_dir_all(dir).map_err(|e| {
-            Failure {
-                code: exit_code(ErrorKind::Sink),
-                message: format!("could not create {}: {e}", dir.display()),
+    let roots = verse_store::Roots::from_env();
+    let data_dir = verse_store::data_dir(&roots);
+    let default_dir = verse_store::output_dir(&roots);
+
+    // Said once, and only about a location the user did not choose. OneDrive
+    // redirection is followed — that is where their Documents are — but a
+    // transcript landing in a folder a background service uploads is a fact
+    // about their machine they are entitled to hear rather than deduce.
+    if options.output.is_none() {
+        for notice in verse_store::notices(&roots) {
+            eprintln!("note: {notice}");
+        }
+    }
+
+    let record_path = data_dir.join("outputs.json");
+    // Forgotten files are dropped on the way in, never on the way out. Doing it
+    // before a save would take every claim made moments earlier with it, since
+    // none of those transcripts has been written yet — which is precisely what
+    // happened the first time this was tried, and why the output directory
+    // filled with `zh.srt`, `zh (2).srt`, `zh (3).srt`.
+    let mut ownership = Ownership::load(&record_path);
+    ownership.prune();
+
+    let outputs =
+        resolve_outputs(&inputs, options.output.as_deref(), format, &default_dir, &mut ownership)?;
+
+    // Written before the transcript is, so the claim is durable even if the run
+    // is interrupted.
+    if let Err(e) = ownership.save(&record_path) {
+        // Not fatal — the transcripts still get written — but it is the
+        // difference between replacing a file and accumulating numbered
+        // copies, so it is said rather than swallowed.
+        eprintln!(
+            "warning: could not record where transcripts go ({}): {e}",
+            record_path.display()
+        );
+    }
+
+    // Each output's own directory, so the default directory is made on first
+    // use and an explicit one is made when several inputs need it. `-o -` has
+    // no directory and is not a file.
+    for path in &outputs {
+        if path == Path::new("-") {
+            continue;
+        }
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|e| Failure {
+                    code: exit_code(ErrorKind::Sink),
+                    message: format!("could not create {}: {e}", parent.display()),
+                })?;
             }
-        })?;
+        }
     }
 
     // The chain itself lives in `verse-pipeline`, shared with the window and
@@ -1267,68 +1331,177 @@ mod tests {
     }
 
     #[test]
-    fn one_input_keeps_the_output_rules_it_had_alone() {
-        let inputs = vec![PathBuf::from("/audio/a.m4a")];
+    fn the_usage_text_names_the_default_output_directory() {
+        // The help is computed from the same function the resolution uses, and
+        // this pins that. A default nobody can find without reading the source
+        // is a default that surprises people.
+        let usage = transcribe_usage();
+        let expected = verse_store::output_dir(&verse_store::Roots::from_env());
 
-        assert_eq!(
-            resolve_outputs(&inputs, None, ExportFormat::Srt).unwrap(),
-            vec![PathBuf::from("/audio/a.srt")]
+        assert!(
+            usage.contains(&expected.display().to_string()),
+            "the help must say where output goes; got:\n{usage}"
         );
-        assert_eq!(
-            resolve_outputs(&inputs, Some(Path::new("/tmp/out.txt")), ExportFormat::Srt).unwrap(),
-            vec![PathBuf::from("/tmp/out.txt")]
-        );
+    }
+
+    /// A real file, because the naming rules key on what is actually on disk.
+    fn audio(dir: &Path, name: &str) -> PathBuf {
+        let path = dir.join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create parent");
+        }
+        std::fs::write(&path, b"pretend audio").expect("write");
+        path
+    }
+
+    #[test]
+    fn one_input_with_an_explicit_path_uses_it_verbatim() {
+        let dir = scratch("resolve-explicit");
+        let inputs = vec![audio(&dir, "a.m4a")];
+        let mut record = Ownership::default();
+
+        let outputs = resolve_outputs(
+            &inputs,
+            Some(Path::new("/tmp/out.txt")),
+            ExportFormat::Srt,
+            &dir.join("default"),
+            &mut record,
+        )
+        .expect("resolve");
+
+        assert_eq!(outputs, vec![PathBuf::from("/tmp/out.txt")]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn one_input_with_no_output_goes_to_the_default_directory() {
+        // The change: output no longer lands beside the recording.
+        let dir = scratch("resolve-default");
+        let inputs = vec![audio(&dir, "meeting.m4a")];
+        let mut record = Ownership::default();
+        let default = dir.join("Documents/Verse");
+
+        let outputs = resolve_outputs(&inputs, None, ExportFormat::Srt, &default, &mut record)
+            .expect("resolve");
+
+        assert_eq!(outputs, vec![default.join("meeting.srt")]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn several_inputs_write_into_the_directory_named() {
-        let inputs = vec![PathBuf::from("/audio/a.wav"), PathBuf::from("/audio/b.wav")];
+        let dir = scratch("resolve-dir");
+        let inputs = vec![audio(&dir, "one/a.wav"), audio(&dir, "two/b.wav")];
+        let mut record = Ownership::default();
+        let out = dir.join("out");
 
-        assert_eq!(
-            resolve_outputs(&inputs, Some(Path::new("/out")), ExportFormat::Srt).unwrap(),
-            vec![PathBuf::from("/out/a.srt"), PathBuf::from("/out/b.srt")]
-        );
+        let outputs = resolve_outputs(&inputs, Some(&out), ExportFormat::Srt, &out, &mut record)
+            .expect("resolve");
+
+        assert_eq!(outputs, vec![out.join("a.srt"), out.join("b.srt")]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn several_inputs_with_no_output_go_beside_their_own_files() {
-        let inputs = vec![PathBuf::from("/audio/a.wav"), PathBuf::from("/other/b.wav")];
+    fn two_inputs_with_one_name_get_numbers_rather_than_a_clash() {
+        // `a.wav` and `a.mp3` both want `a.srt`. Numbered rather than refused,
+        // because with one output directory this is the ordinary case — two
+        // recordings really can be called 会议.m4a — and refusing would make
+        // `verse transcribe recordings/` unusable.
+        let dir = scratch("resolve-numbered");
+        let inputs = vec![audio(&dir, "one/a.wav"), audio(&dir, "two/a.mp3")];
+        let mut record = Ownership::default();
+        let out = dir.join("out");
 
-        assert_eq!(
-            resolve_outputs(&inputs, None, ExportFormat::Srt).unwrap(),
-            vec![PathBuf::from("/audio/a.srt"), PathBuf::from("/other/b.srt")]
-        );
+        let outputs = resolve_outputs(&inputs, Some(&out), ExportFormat::Srt, &out, &mut record)
+            .expect("resolve");
+
+        assert_eq!(outputs, vec![out.join("a.srt"), out.join("a (2).srt")]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn two_inputs_that_would_share_an_output_are_refused() {
-        // `a.wav` and `a.mp3` both want `a.srt`. Refused rather than
-        // auto-suffixed: an unpredictable name is worse for whoever reads the
-        // report than being told to rename one.
-        let inputs = vec![PathBuf::from("/audio/a.wav"), PathBuf::from("/audio/a.mp3")];
+    fn running_the_same_batch_twice_names_the_same_files() {
+        // Otherwise a second run fills the folder with copies, which is the
+        // failure this is most likely to have.
+        let dir = scratch("resolve-idempotent");
+        let inputs = vec![audio(&dir, "one/a.wav"), audio(&dir, "two/a.mp3")];
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).expect("out dir");
+        let mut record = Ownership::default();
 
-        let failure = resolve_outputs(&inputs, None, ExportFormat::Srt).expect_err("should refuse");
-        assert_eq!(failure.code, 2);
-        assert!(failure.message.contains("a.srt"), "got: {}", failure.message);
+        let first = resolve_outputs(&inputs, Some(&out), ExportFormat::Srt, &out, &mut record)
+            .expect("resolve");
+        for path in &first {
+            std::fs::write(path, "text").expect("write");
+        }
+
+        let second = resolve_outputs(&inputs, Some(&out), ExportFormat::Srt, &out, &mut record)
+            .expect("resolve");
+
+        assert_eq!(first, second);
+        assert_eq!(std::fs::read_dir(&out).expect("list").count(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn somebody_elses_transcript_is_never_replaced() {
+        // Through the default directory rather than `-o`: with a single input,
+        // `-o <path>` names a file, which is the rule this command has always
+        // had and which `one_input_with_an_explicit_path_uses_it_verbatim`
+        // pins.
+        let dir = scratch("resolve-foreign");
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).expect("out dir");
+        std::fs::write(out.join("a.srt"), "typed by hand").expect("plant");
+
+        let inputs = vec![audio(&dir, "a.wav")];
+        let mut record = Ownership::default();
+
+        let outputs = resolve_outputs(&inputs, None, ExportFormat::Srt, &out, &mut record)
+            .expect("resolve");
+
+        assert_eq!(outputs, vec![out.join("a (2).srt")]);
+        assert_eq!(
+            std::fs::read_to_string(out.join("a.srt")).expect("read"),
+            "typed by hand"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn one_output_file_cannot_hold_several_transcripts() {
-        let inputs = vec![PathBuf::from("/audio/a.wav"), PathBuf::from("/audio/b.wav")];
+        let dir = scratch("resolve-file-for-many");
+        let inputs = vec![audio(&dir, "a.wav"), audio(&dir, "b.wav")];
+        let mut record = Ownership::default();
 
         // Named like a subtitle file, whether or not it exists yet.
         assert_eq!(
-            resolve_outputs(&inputs, Some(Path::new("/out.srt")), ExportFormat::Srt)
-                .expect_err("a file is not a directory")
-                .code,
+            resolve_outputs(
+                &inputs,
+                Some(Path::new("/out.srt")),
+                ExportFormat::Srt,
+                &dir,
+                &mut record
+            )
+            .expect_err("a file is not a directory")
+            .code,
             2
         );
         // And stdout is not a directory either.
         assert_eq!(
-            resolve_outputs(&inputs, Some(Path::new("-")), ExportFormat::Srt)
-                .expect_err("stdout is not a directory")
-                .code,
+            resolve_outputs(
+                &inputs,
+                Some(Path::new("-")),
+                ExportFormat::Srt,
+                &dir,
+                &mut record
+            )
+            .expect_err("stdout is not a directory")
+            .code,
             2
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
