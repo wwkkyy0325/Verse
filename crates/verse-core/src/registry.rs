@@ -30,6 +30,17 @@ pub struct EngineConfig {
     /// with no error — so a transcript that is quietly missing its last third
     /// looks exactly like one that finished.
     pub max_output_tokens: Option<i32>,
+    /// Domain vocabulary to bias the decoder towards.
+    ///
+    /// Unlike `inverse_text_normalization`, which decides how a number is
+    /// *written*, this changes what is **heard**: it is a lexicon fed to the
+    /// decoder, so a term the recogniser would have mangled comes out right.
+    ///
+    /// Only a generative decoder has somewhere to put it. An encoder that
+    /// emits a frame per frame cannot use one, and ignoring it silently would
+    /// leave a caller believing a feature was working — which is why
+    /// [`EngineDescriptor::supports_hotwords`] exists.
+    pub hotwords: Option<String>,
 }
 
 /// Configuration handed to a source factory.
@@ -58,6 +69,13 @@ pub struct EngineDescriptor {
     /// Whether this engine emits incremental output. Lets the UI decide
     /// between a progress bar and a live text view before instantiating it.
     pub streaming: bool,
+    /// Whether this engine can take a domain vocabulary.
+    ///
+    /// Declared for the same reason `streaming` is: a caller has to know
+    /// *before* it builds the engine. The alternative — pass the value and see
+    /// whether the transcript changes — is indistinguishable from a lexicon
+    /// that simply did not help.
+    pub supports_hotwords: bool,
     pub factory: EngineFactory,
 }
 

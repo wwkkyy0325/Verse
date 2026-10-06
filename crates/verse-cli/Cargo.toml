@@ -16,6 +16,14 @@ verse-audio.workspace = true
 verse-model.workspace = true
 verse-pipeline.workspace = true
 
+# The JSON report. Both are already in this workspace's build graph — the
+# model catalogue and the window's bridge use them — so this adds a manifest
+# line rather than a crate. Hand-rolling it would mean escaping quotes and
+# control characters in Chinese transcripts by hand, which is the bug the
+# report's contract tests exist to catch.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
 # Only the `transcribe` example reaches past the pipeline to an engine
 # directly. The binary itself no longer names one.
 [dev-dependencies]

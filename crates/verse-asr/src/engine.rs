@@ -101,6 +101,7 @@ impl OfflineEngine {
         tokenizer_dir: &Path,
         threads: usize,
         max_output_tokens: Option<i32>,
+        hotwords: Option<String>,
     ) -> Result<Self> {
         for path in [conv_frontend, encoder, decoder] {
             if !path.is_file() {
@@ -119,18 +120,14 @@ impl OfflineEngine {
 
         let config = OfflineRecognizerConfig {
             model_config: OfflineModelConfig {
-                qwen3_asr: OfflineQwen3ASRModelConfig {
-                    conv_frontend: Some(path_string(conv_frontend)?),
-                    encoder: Some(path_string(encoder)?),
-                    decoder: Some(path_string(decoder)?),
-                    tokenizer: Some(path_string(tokenizer_dir)?),
-                    // The engine's own default when unset. `unwrap_or_default`
-                    // would be zero, which means "produce nothing" — a silent
-                    // failure that looks like a model that cannot recognise.
-                    max_new_tokens: max_output_tokens
-                        .unwrap_or(OfflineQwen3ASRModelConfig::default().max_new_tokens),
-                    ..Default::default()
-                },
+                qwen3_asr: qwen3_config(
+                    conv_frontend,
+                    encoder,
+                    decoder,
+                    tokenizer_dir,
+                    max_output_tokens,
+                    hotwords,
+                )?,
                 tokens: Some(String::new()),
                 num_threads: thread_count(threads),
                 ..Default::default()
@@ -262,6 +259,36 @@ fn clean_markers(raw: &str) -> String {
     out.trim().to_string()
 }
 
+/// The model configuration for Qwen3-ASR.
+///
+/// Split out of the constructor so that the one thing checkable without a
+/// 982 MB model — that a lexicon arrives where it is supposed to — can be
+/// checked. See the tests below.
+fn qwen3_config(
+    conv_frontend: &Path,
+    encoder: &Path,
+    decoder: &Path,
+    tokenizer_dir: &Path,
+    max_output_tokens: Option<i32>,
+    hotwords: Option<String>,
+) -> Result<OfflineQwen3ASRModelConfig> {
+    Ok(OfflineQwen3ASRModelConfig {
+        conv_frontend: Some(path_string(conv_frontend)?),
+        encoder: Some(path_string(encoder)?),
+        decoder: Some(path_string(decoder)?),
+        tokenizer: Some(path_string(tokenizer_dir)?),
+        // The engine's own default when unset. `unwrap_or_default` would be
+        // zero, which means "produce nothing" — a silent failure that looks
+        // like a model that cannot recognise.
+        max_new_tokens: max_output_tokens
+            .unwrap_or(OfflineQwen3ASRModelConfig::default().max_new_tokens),
+        // A lexicon of nothing but whitespace is the same as none, and passing
+        // it on would be a difference without a meaning.
+        hotwords: hotwords.filter(|terms| !terms.trim().is_empty()),
+        ..Default::default()
+    })
+}
+
 fn thread_count(requested: usize) -> i32 {
     requested.max(1).min(i32::MAX as usize) as i32
 }
@@ -277,7 +304,8 @@ fn path_string(path: &Path) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::clean_markers;
+    use super::{clean_markers, qwen3_config, OfflineQwen3ASRModelConfig};
+    use std::path::Path;
 
     #[test]
     fn sensevoice_markers_are_stripped() {
@@ -307,5 +335,66 @@ mod tests {
         // No closing `|>`, so the marker is malformed. Everything from it
         // onward is discarded rather than emitted as if it were text.
         assert_eq!(clean_markers("保留<|zh丢弃"), "保留");
+    }
+
+    /// The Qwen3 model config, assembled with placeholder paths.
+    ///
+    /// These check the one thing that can be checked without a 982 MB model:
+    /// that a lexicon arrives where it is supposed to. The paths are never
+    /// opened.
+    fn config_with(hotwords: Option<&str>) -> OfflineQwen3ASRModelConfig {
+        qwen3_config(
+            Path::new("conv.onnx"),
+            Path::new("enc.onnx"),
+            Path::new("dec.onnx"),
+            Path::new("tokenizer"),
+            None,
+            hotwords.map(str::to_string),
+        )
+        .expect("string paths convert")
+    }
+
+    #[test]
+    fn a_lexicon_reaches_the_decoder() {
+        assert_eq!(
+            config_with(Some("球拍,羽毛球")).hotwords.as_deref(),
+            Some("球拍,羽毛球")
+        );
+    }
+
+    #[test]
+    fn the_lexicon_is_passed_through_unchanged() {
+        // The delimiter grammar belongs to sherpa-onnx. Reformatting it here
+        // would be a second place to be wrong, and the one that is harder to
+        // notice.
+        for given in ["球拍 羽毛球", "球拍,羽毛球", "球拍\n羽毛球"] {
+            assert_eq!(config_with(Some(given)).hotwords.as_deref(), Some(given));
+        }
+    }
+
+    #[test]
+    fn a_blank_lexicon_is_the_same_as_none() {
+        for blank in ["", "   ", "\n\t "] {
+            assert_eq!(
+                config_with(Some(blank)).hotwords, None,
+                "{blank:?} should not be sent as a lexicon"
+            );
+        }
+    }
+
+    #[test]
+    fn no_lexicon_leaves_the_model_default_alone() {
+        assert_eq!(config_with(None).hotwords, None);
+    }
+
+    #[test]
+    fn the_token_budget_still_defaults_rather_than_to_zero() {
+        // The bug this guards against: `unwrap_or_default` on the option would
+        // be 0, which means "generate nothing" and looks exactly like a model
+        // that cannot recognise.
+        assert_eq!(
+            config_with(None).max_new_tokens,
+            OfflineQwen3ASRModelConfig::default().max_new_tokens
+        );
     }
 }

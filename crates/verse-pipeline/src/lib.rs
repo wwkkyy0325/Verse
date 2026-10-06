@@ -41,6 +41,16 @@ pub struct Request {
     pub max_output_tokens: Option<i32>,
     /// When to disbelieve the segmenter and recognise the file whole.
     pub guard: GuardSettings,
+    /// Domain vocabulary for an engine that can use one. See
+    /// [`verse_core::EngineConfig::hotwords`].
+    pub hotwords: Option<String>,
+    /// CPU threads for the engine, or `None` for the hardware probe's own
+    /// figure.
+    ///
+    /// Worth setting only when several transcriptions run at once. That figure
+    /// is already cores − 1, so four workers taking it each would ask the
+    /// machine for four times what it has.
+    pub threads: Option<usize>,
 }
 
 impl Request {
@@ -82,6 +92,20 @@ pub struct Transcriber {
     engine: Box<dyn AsrEngine>,
 }
 
+/// Whether the named engine can use a domain vocabulary.
+///
+/// Answerable **without loading a model**, which is the point: a warning about
+/// a lexicon that will be ignored is worth having before a 228 MB wait, not
+/// after it. Read from the descriptor rather than compared against a list of
+/// names, so the pipeline still does not know which engines exist.
+pub fn engine_accepts_hotwords(engine: &str) -> bool {
+    let mut registry = Registry::new();
+    register_builtin_engines(&mut registry);
+    registry
+        .engine(engine)
+        .is_some_and(|descriptor| descriptor.supports_hotwords)
+}
+
 impl Transcriber {
     /// Load the engine named by `request`.
     pub fn load(request: Request) -> Result<Self, Error> {
@@ -89,13 +113,15 @@ impl Transcriber {
 
         let mut registry = Registry::new();
         register_builtin_engines(&mut registry);
+
         let engine = registry.create_engine(
             &request.engine,
             &verse_core::EngineConfig {
                 model_dir: request.models_dir.join(&request.engine),
-                threads: hardware.engine_threads(),
+                threads: request.threads.unwrap_or_else(|| hardware.engine_threads()),
                 inverse_text_normalization: request.inverse_text_normalization,
                 max_output_tokens: request.max_output_tokens,
+                hotwords: request.hotwords.clone(),
             },
         )?;
 

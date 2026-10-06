@@ -27,6 +27,9 @@ pub fn register_builtin_engines(registry: &mut Registry) {
         id: "qwen3-asr",
         display_name: "Qwen3-ASR-0.6B (LLM decoder, 52 languages)",
         streaming: false,
+        // The LLM decoder takes a lexicon. This is the one capability
+        // SenseVoice does not have.
+        supports_hotwords: true,
         factory: Arc::new(|cfg| {
             let engine = OfflineEngine::qwen3(
                 &cfg.model_dir.join("conv_frontend.onnx"),
@@ -35,6 +38,7 @@ pub fn register_builtin_engines(registry: &mut Registry) {
                 &cfg.model_dir.join("tokenizer"),
                 cfg.threads,
                 cfg.max_output_tokens,
+                cfg.hotwords.clone(),
             )?;
             Ok(Box::new(engine) as Box<dyn verse_core::AsrEngine>)
         }),
@@ -44,6 +48,8 @@ pub fn register_builtin_engines(registry: &mut Registry) {
         id: "sensevoice",
         display_name: "SenseVoice-Small (zh, en, yue, ja, ko)",
         streaming: false,
+        // An encoder emitting a frame per frame has nowhere to put a lexicon.
+        supports_hotwords: false,
         factory: Arc::new(|cfg| {
             let model = cfg.model_dir.join("model.int8.onnx");
             let tokens = cfg.model_dir.join("tokens.txt");

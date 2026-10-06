@@ -281,6 +281,9 @@ pub fn start(app: &AppHandle, input: std::path::PathBuf, models_dir: std::path::
             vad: verse_audio::VadSettings::default(),
             max_output_tokens: None,
             guard: verse_pipeline::GuardSettings::default(),
+            // The window offers no vocabulary; the plan defers its screens.
+            hotwords: None,
+            threads: None,
         };
 
         // Loading is where a missing or unusable model shows up, and it

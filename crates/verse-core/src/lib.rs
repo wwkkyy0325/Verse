@@ -177,6 +177,7 @@ mod tests {
             id: "stub",
             display_name: "Stub engine",
             streaming: false,
+            supports_hotwords: false,
             factory: Arc::new(
                 |_cfg| Ok(Box::new(StubEngine { accepted: 0 }) as Box<dyn AsrEngine>),
             ),
@@ -187,6 +188,7 @@ mod tests {
             threads: 2,
             inverse_text_normalization: true,
             max_output_tokens: None,
+            hotwords: None,
         };
         let engine = registry
             .create_engine("stub", &cfg)
@@ -211,6 +213,7 @@ mod tests {
             id: "stub",
             display_name: "Stub engine",
             streaming: false,
+            supports_hotwords: false,
             factory: Arc::new(
                 |_cfg| Ok(Box::new(StubEngine { accepted: 0 }) as Box<dyn AsrEngine>),
             ),

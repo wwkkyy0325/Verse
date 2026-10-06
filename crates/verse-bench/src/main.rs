@@ -50,6 +50,8 @@ struct Options {
     max_output_tokens: Option<i32>,
     /// When to disbelieve the segmenter and recognise the file whole.
     guard: verse_pipeline::GuardSettings,
+    /// Domain vocabulary, for engines that take one.
+    hotwords: Option<String>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -70,6 +72,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         vad: options.vad,
         max_output_tokens: options.max_output_tokens,
         guard: options.guard,
+        hotwords: options.hotwords.clone(),
+        threads: None,
     };
 
     eprintln!("loading {} ...", options.engine);
@@ -245,6 +249,7 @@ fn parse(args: Vec<String>) -> Result<Options, String> {
         vad: verse_audio::VadSettings::default(),
         max_output_tokens: None,
         guard: verse_pipeline::GuardSettings::default(),
+        hotwords: None,
     };
 
     let mut i = 0;
@@ -274,6 +279,7 @@ fn parse(args: Vec<String>) -> Result<Options, String> {
                         .map_err(|_| format!("--max-tokens {raw} is not a number"))?,
                 );
             }
+            "--hotwords" => options.hotwords = Some(take(&args, &mut i, "--hotwords")?),
             "--guard-floor" => {
                 let raw = take(&args, &mut i, "--guard-floor")?;
                 options.guard.floor = raw

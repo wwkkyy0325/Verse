@@ -43,6 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             threads: 4,
             inverse_text_normalization: true,
             max_output_tokens: None,
+            hotwords: None,
         },
     )?;
 
