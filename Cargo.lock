@@ -4115,6 +4115,7 @@ dependencies = [
 name = "verse-cli"
 version = "0.1.0"
 dependencies = [
+ "httparse",
  "serde",
  "serde_json",
  "verse-asr",

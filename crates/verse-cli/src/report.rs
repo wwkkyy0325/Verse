@@ -129,6 +129,47 @@ pub struct CacheUsage {
     pub temporary_bytes: u64,
 }
 
+/// What `verse serve` is and what it is doing.
+///
+/// The first thing a client asks after finding the discovery file: is this the
+/// process I think it is, and is the model it needs actually here.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Health {
+    pub version: u32,
+    pub ok: bool,
+    pub service: ServiceInfo,
+    pub model: ModelInfo,
+    pub models_dir: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceInfo {
+    /// Which run this is. A client that read a stale discovery file compares
+    /// this against what it expected rather than trusting the port.
+    pub instance: String,
+    pub pid: u32,
+    pub started_at_ms: u64,
+    pub uptime_ms: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelInfo {
+    pub engine: String,
+    /// **Size only.** `Downloader::is_present` compares lengths, so a model
+    /// present at the expected size but unusable passes this — which is why a
+    /// job is what actually reports that. Said here rather than left for a
+    /// client to discover.
+    pub present: bool,
+    /// `unloaded`, `loading`, `standby` or `busy` — whether the weights are
+    /// resident, which is not the same question as `present`.
+    pub status: String,
+    /// How many times a model has been read from disk since this started.
+    pub loads: u64,
+}
+
 /// What a cleanup removed.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

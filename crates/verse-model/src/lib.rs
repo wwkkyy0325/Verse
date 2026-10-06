@@ -1,8 +1,10 @@
 //! Model catalogue and downloader.
 //!
-//! This is the **only** crate permitted to perform network I/O. Keeping it
-//! isolated is what makes the offline guarantee structural rather than a
-//! matter of discipline — see `design.md` §4.5.
+//! This is the **only** crate permitted to originate network I/O, and keeping
+//! that isolated is what makes the offline guarantee structural rather than a
+//! matter of discipline. The one listening socket — in `verse-cli`'s `serve`
+//! command — accepts connections and makes none of its own, which is a
+//! different thing from reaching out. See `design.md` §4.5.
 //!
 //! **Downloads are always user-initiated.** There is no fetch on startup and
 //! no background refresh: `fetch` is only reached because someone called it,

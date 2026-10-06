@@ -7,6 +7,7 @@
 //! for a handful of flags would be out of proportion.
 
 mod report;
+mod serve;
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -95,6 +96,7 @@ fn main() -> ExitCode {
         }
         Some("model") => model_command(&args[1..]),
         Some("cache") => cache_command(&args[1..]),
+        Some("serve") => serve_command(&args[1..]),
         Some("--version") | Some("-V") => {
             println!("verse {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -128,6 +130,7 @@ fn print_usage() {
     println!("  model fetch <id>      Download a model");
     println!("  model remove <id>     Delete an installed model");
     println!("  model clean           Delete half-finished downloads");
+    println!("  serve                 Listen on 127.0.0.1 so other programs can drive it");
     println!("  cache size            Show what the transcription cache holds");
     println!("  cache clean           Empty the transcription cache");
     println!();
@@ -1085,6 +1088,98 @@ fn cache_command(args: &[String]) -> Result<(), Failure> {
         }
         _ => Err(Failure::usage(USAGE)),
     }
+}
+
+/// Run the loopback service until killed.
+///
+/// The listener binds `127.0.0.1` and only that, and it initiates no
+/// connection: `design.md` §4.5 carries the argument for why that does not
+/// weaken the offline guarantee.
+fn serve_command(args: &[String]) -> Result<(), Failure> {
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        print!("{}", serve_usage());
+        return Ok(());
+    }
+
+    const USAGE: &str = "usage: verse serve [--port <n>] [--models <dir>] [--engine <id>]";
+
+    let mut config = serve::Config {
+        port: serve::DEFAULT_PORT,
+        models_dir: PathBuf::from(DEFAULT_MODELS_DIR),
+        engine: DEFAULT_ENGINE.to_string(),
+        idle: serve::Config::idle_from_env(),
+    };
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--port" => {
+                let raw = take_value(args, &mut i, "--port")?;
+                config.port = raw.parse().map_err(|_| {
+                    Failure::usage(format!("--port wants a number, not {raw:?}"))
+                })?;
+            }
+            "--models" => {
+                config.models_dir = PathBuf::from(take_value(args, &mut i, "--models")?);
+            }
+            "--engine" => config.engine = take_value(args, &mut i, "--engine")?,
+            "--no-idle" => config.idle = None,
+            other => return Err(Failure::usage(format!("unknown option {other:?}\n\n{USAGE}"))),
+        }
+        // `take_value` stops *on* the value, so the step past it is here — the
+        // same shape every other parser in this file uses.
+        i += 1;
+    }
+
+    // The environment overrides the default, and the flag overrides that, which
+    // is the order every other setting in this program uses.
+    if config.port == serve::DEFAULT_PORT {
+        if let Some(raw) = std::env::var_os("VERSE_SERVE_PORT") {
+            let text = raw.to_string_lossy().into_owned();
+            if !text.is_empty() {
+                config.port = text.trim().parse().map_err(|_| {
+                    Failure::usage(format!("VERSE_SERVE_PORT={text:?} is not a port number"))
+                })?;
+            }
+        }
+    }
+    if let Ok(raw) = std::env::var("VERSE_MODELS") {
+        if !raw.is_empty() && config.models_dir == Path::new(DEFAULT_MODELS_DIR) {
+            config.models_dir = PathBuf::from(raw);
+        }
+    }
+
+    serve::run(config).map_err(|message| Failure {
+        code: exit_code(ErrorKind::Io),
+        message,
+    })
+}
+
+fn serve_usage() -> String {
+    let mut s = String::from("usage: verse serve [options]\n\n");
+    s.push_str("Runs until killed, listening on 127.0.0.1 only. Other programs on this\n");
+    s.push_str("machine can submit transcription jobs and poll for the result.\n\n");
+    s.push_str("options:\n");
+    s.push_str(&format!(
+        "      --port <n>         Port (default {}). 0 asks the system for a free one.\n",
+        serve::DEFAULT_PORT
+    ));
+    s.push_str(&format!(
+        "      --models <dir>     Model root (default {DEFAULT_MODELS_DIR})\n"
+    ));
+    s.push_str(&format!(
+        "      --engine <id>      Engine (default {DEFAULT_ENGINE})\n"
+    ));
+    s.push_str("      --no-idle          Keep the model loaded until killed\n");
+    s.push_str("\nenvironment:\n");
+    s.push_str("      VERSE_SERVE_PORT   The same as --port\n");
+    s.push_str("      VERSE_MODELS       The same as --models\n");
+    s.push_str("      VERSE_MODEL_IDLE_SECS\n");
+    s.push_str("                         Seconds to keep the model after the last job\n");
+    s.push_str("                         (default 300; 0 keeps it for the process's life)\n");
+    s.push_str("\nThe port, the token and the pid are written to serve.json in the per-user\n");
+    s.push_str("data directory, which is where a client should look for them.\n");
+    s
 }
 
 /// Bytes as something a person reads.

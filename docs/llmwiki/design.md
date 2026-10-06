@@ -4,7 +4,7 @@ Offline-first Chinese speech-to-text. Status: P1a complete, P1b (GUI) in progres
 
 ## 1. What this is
 
-A desktop tool that turns audio into text, locally. No account, no network at runtime, no GPU.
+A desktop tool that turns audio into text, locally. No account, no outbound network at runtime, no GPU.
 
 Two delivery modes:
 
@@ -57,7 +57,7 @@ verse-bench    Evaluation harness; deliberately not shipped                 [bin
 Four boundaries justify the splits:
 
 - **All traits live in `verse-core`; only implementations live elsewhere.** `AudioSource`, `Segmenter`, `AsrEngine` and `TextSink` are defined there as pure abstractions. This is what lets the registry (§4.6) hold implementations without `verse-core` ever linking sherpa-onnx, and it is what makes swapping an engine a configuration change rather than a code change.
-- `verse-model` isolates all network access. This is what makes the offline guarantee structural (§4.5).
+- `verse-model` isolates all **outbound** network access; `verse-cli`'s `serve` command adds one loopback listener and initiates nothing — that pair is what makes the offline guarantee structural (§4.5).
 - `verse-audio` and `verse-asr` are the two crates that touch native code — ffmpeg through a child process, sherpa-onnx through FFI. `verse-core` unit tests therefore link neither, and stay fast.
 - **`verse-store` owns "where data lives on this machine"** — the per-user directories, the transcription result cache, the resume checkpoints, and the naming rules that decide which file a transcript is written to. It is a leaf: it depends on no workspace crate, so the command line can resolve an output path without linking the engine. The cache's wire types live here for the same reason the CLI's live in `verse-cli/src/report.rs` — the format belongs to the crate that owns it, and `verse-core` keeps its empty dependency list.
 
@@ -152,7 +152,24 @@ Long files must not be loaded whole. A 2-hour recording decodes to roughly 1.4 G
 
 ### 4.5 Runtime boundary: offline
 
-`verse-core` must contain **no HTTP client**. All network access lives in `verse-model` and runs only on explicit user action. "Works offline" is then an architectural property, not a discipline.
+`verse-core` must contain **no HTTP client**, and no crate outside `verse-model` may **originate** a network connection. Everything Verse sends out is one model download, and it runs only because someone asked for it. "Works offline" is then an architectural property, not a discipline.
+
+**One listening socket, and it is bounded.** `verse serve` (§4.11) opens a TCP
+listener on `127.0.0.1` and only that — never `0.0.0.0`, never a routable
+interface — so that other programs on the same machine can drive the pipeline.
+The distinction that keeps the guarantee intact:
+
+> **An outbound connection is a request to a server; an inbound one is a request
+> from a local peer.**
+
+The first is what "offline" forbids, and only `verse-model` may make it. The
+second is a local program using this one, which is the point of that command. A
+listener accepts connections and initiates none: it adds no HTTP client, reads
+and writes no remote host, and no transcript, audio or model byte crosses it to
+anywhere but a loopback peer. It is bound only while a user is running `serve` —
+there is no autostart, no daemon and no service registration, and with the
+command not running no socket is bound at all. The check is a `grep` for a
+listening call, not a promise.
 
 The caches of §4.9 hold this too. They read and write local files and nothing
 else: no remote validation, no checking whether a cached result is still

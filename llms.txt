@@ -1,9 +1,10 @@
 # Verse
 
 > Offline Chinese speech-to-text for Windows, in Rust. A command-line tool and
-> a desktop window over the same pipeline. Transcription runs locally with
-> sherpa-onnx; nothing is uploaded, and the only network access in the program
-> is `verse model fetch`.
+> a desktop window over the same pipeline, and a local service other programs
+> can drive. Transcription runs locally with sherpa-onnx; nothing is uploaded,
+> and the only outbound network access in the program is `verse model fetch`.
+> `verse serve` opens one listener on 127.0.0.1 and connects to nothing.
 
 Verse is designed to be driven by a program as well as by a person. Every
 command takes `--json`; results go to stdout and diagnostics to stderr; failures
@@ -16,6 +17,7 @@ return distinct exit codes rather than a single non-zero.
     verse model fetch <id> [--models <dir>]
     verse model remove <id> [--models <dir>]
     verse model clean [--json] [--models <dir>]
+    verse serve [--port <n>] [--models <dir>] [--engine <id>]
     verse cache size [--json]
     verse cache clean [--json]
 

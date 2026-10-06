@@ -21,6 +21,14 @@ verse-pipeline.workspace = true
 # re-export path resolution, which is not its business.
 verse-store.workspace = true
 
+# The request line and the headers, for `verse serve`. Already in this
+# workspace's build graph — Tauri's hyper stack uses it — so this adds a
+# manifest line rather than a crate. It is used for the one genuinely fiddly
+# part: parsing a head incrementally across reads. Hand-rolling that means
+# re-deriving when a partial request becomes a complete one, which is exactly
+# the kind of subtlety this project prefers to borrow rather than invent.
+httparse = "1"
+
 # The JSON report. Both are already in this workspace's build graph — the
 # model catalogue and the window's bridge use them — so this adds a manifest
 # line rather than a crate. Hand-rolling it would mean escaping quotes and

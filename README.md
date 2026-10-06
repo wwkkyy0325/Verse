@@ -3,8 +3,10 @@
 Offline Chinese speech-to-text for Windows. Drop in an audio or video file, get
 subtitles out. Nothing is sent anywhere: the models run locally, and the only
 network access in the whole program is the one command that downloads a model.
+Exactly one command opens a socket — `verse serve` — and it listens on
+`127.0.0.1` and nothing else, only while it is running. Nothing connects out.
 
-- **Runs offline.** No account, no API key, no upload.
+- **Runs offline.** No account, no API key, no upload, no outbound connection.
 - **Punctuates.** Subtitles come out with commas and full stops already in
   them, which is the reason the default engine was chosen.
 - **Drivable by a program.** Every command takes `--json`, batches take a
