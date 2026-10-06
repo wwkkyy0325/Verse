@@ -8,9 +8,9 @@
 //! - [`identity`] — whether the file in hand is the same file as last time.
 //! - [`output`] — which name inside that directory this particular transcript
 //!   takes, given that a folder can hold two recordings with one name.
-//!
-//! A fourth, the transcription cache itself, builds on [`identity`] and lives
-//! alongside them.
+//! - [`key`] — what makes two runs the same run.
+//! - [`cache`], [`entry`] — the transcription cache itself, built on the two
+//!   above.
 //!
 //! **It depends on no workspace crate.** `verse-core`'s empty dependency list
 //! is the project's strongest structural rule, and the wire-format convention
@@ -27,10 +27,16 @@
 //! could fail a transcription, a bookkeeping file would be more important than
 //! the product.
 
+pub mod cache;
 pub mod dirs;
+pub mod entry;
 pub mod identity;
+pub mod key;
 pub mod output;
 
+pub use cache::{Cache, Usage};
 pub use dirs::{data_dir, notices, output_dir, Roots, FOLDER};
+pub use entry::{CoverageDto, Entry, SegmentDto, Span, TranscriptDto};
 pub use identity::FileId;
+pub use key::{content_digest, key, Fingerprint, Verify, SEMANTICS};
 pub use output::{destination, Choice, Ownership};

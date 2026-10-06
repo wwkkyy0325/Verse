@@ -97,7 +97,7 @@ The dependency claim in the manifest was verified rather than asserted:
 `verse-store` itself. `sha2` and `dirs` were already in the lock, so they add
 manifest lines and nothing to build.
 
-## [ ] 2. `verse-store`: the result cache
+## [x] 2. `verse-store`: the result cache
 
 Key = canonical path + size + nanosecond mtime + **SHA-256 over a bounded
 512 KiB window** (first 256 KiB + last 256 KiB) + a full settings fingerprint
@@ -122,6 +122,31 @@ a cache is never allowed to break the product.
 **Verify:** key stability; a changed mtime, setting, or model file each bust
 the key; a truncated edit is caught by the bounded digest; a corrupt entry is a
 miss; a `.tmp` file is never read.
+
+**Done.** 30 tests, and the fingerprint is described by the caller rather than
+computed here, so `verse-store` still depends on no workspace crate.
+
+Timestamps are stored as seconds-and-nanoseconds, not milliseconds. The CLI's
+report rounds to milliseconds because a person reads it; an entry is *replayed*
+into a `Duration` and handed on as though the work had just been done, so a
+rounding there would make a cached transcript quietly differ from a computed
+one. A test round-trips sub-millisecond offsets to pin it.
+
+**The documented limit is asserted, not described.** `the_bounded_digest_
+misses_a_changed_middle_and_full_catches_it` writes a 700 KiB file, changes one
+byte in the middle, and asserts the bounded digest is *unchanged* while the
+full one is not. If that test ever starts failing, the window grew and the doc
+comment above `Verify` is now wrong.
+
+**A test premise was wrong and the test said so.** `two_floats_that_print_
+alike_do_not_share_a_key` failed: Rust's `Display` for floats prints the
+shortest string that round-trips, so two different values never render alike
+and the mechanism I had written into the doc comment was not real. The comment
+now says what is true — bits are used because shortest-round-trip is a choice
+the standard library makes and not a contract this crate can hold it to, and a
+rendering rounded for readability would collapse two thresholds into one
+string. The test now asserts that rounding premise explicitly before relying
+on it.
 
 ## [ ] 3. The pipeline consults the cache
 
