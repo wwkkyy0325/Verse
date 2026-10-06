@@ -47,6 +47,29 @@ pub enum Verify {
 /// How much of each end [`Verify::Bounded`] reads.
 const WINDOW: u64 = 256 * 1024;
 
+impl Verify {
+    /// The mode named by `VERSE_CACHE_VERIFY`.
+    ///
+    /// Anything unrecognised means the default, including a misspelling.
+    /// Reading an unknown word as "full" would silently make every run slow;
+    /// reading it as "bounded" is what a person who did not set the variable
+    /// gets anyway.
+    pub fn from_env() -> Self {
+        match std::env::var("VERSE_CACHE_VERIFY").ok().as_deref() {
+            Some("full") => Verify::Full,
+            _ => Verify::Bounded,
+        }
+    }
+}
+
+/// Whether `VERSE_NO_CACHE` asks for the cache to be left out entirely.
+///
+/// Set to anything but the empty string. An empty value means "unset", by the
+/// same rule [`crate::dirs`] applies to its own variables.
+pub fn caching_refused() -> bool {
+    std::env::var_os("VERSE_NO_CACHE").is_some_and(|value| !value.is_empty())
+}
+
 /// The accumulated description of one run's settings.
 ///
 /// A list of labelled values rather than a struct, because the fields come from

@@ -341,6 +341,13 @@ pub fn start(app: &AppHandle, input: std::path::PathBuf, models_dir: std::path::
             // The window offers no vocabulary; the plan defers its screens.
             hotwords: None,
             threads: None,
+            // The window uses the cache, so dropping a file that has been
+            // transcribed before returns it immediately. There is no switch
+            // for it here: nothing in the interface suggests a reason a person
+            // would want to wait twice.
+            cache: verse_pipeline::CachePolicy::under(&verse_store::data_dir(
+                &verse_store::Roots::from_env(),
+            )),
         };
 
         // Loading is where a missing or unusable model shows up, and it

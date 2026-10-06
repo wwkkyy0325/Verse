@@ -9,6 +9,7 @@
 //! copied because a benchmark measuring a second implementation of the
 //! pipeline would be measuring the wrong thing.
 
+mod cache;
 mod coverage;
 
 use std::path::{Path, PathBuf};
@@ -20,6 +21,7 @@ use verse_core::{
     HardwareProfile, JobId, JobKind, Registry, SegmentId, Segmenter, Transcript,
 };
 
+pub use cache::{from_entry, settings_digest, to_entry, CachePolicy};
 pub use coverage::{
     Coverage, CoverageMeter, GuardSettings, DEFAULT_FLOOR, DEFAULT_MIN_ENERGETIC_SECONDS,
 };
@@ -51,6 +53,8 @@ pub struct Request {
     /// is already cores − 1, so four workers taking it each would ask the
     /// machine for four times what it has.
     pub threads: Option<usize>,
+    /// Whether to look for this transcription already done, and where.
+    pub cache: CachePolicy,
 }
 
 impl Request {
@@ -74,6 +78,13 @@ pub struct Transcription {
     /// whole. Recorded because a recovered file is slower than a normal one by
     /// design, and a caller measuring cost needs to know which it got.
     pub recovered: bool,
+    /// Whether this came out of the cache rather than out of the engine.
+    ///
+    /// Travels with the result because it is the difference between "this took
+    /// four minutes" and "this took no time at all", and a caller comparing
+    /// runs — or a person wondering why the second one was instant — has no
+    /// other way to tell.
+    pub cached: bool,
 }
 
 /// A loaded recogniser, ready to transcribe files one after another.
@@ -90,6 +101,13 @@ pub struct Transcription {
 pub struct Transcriber {
     request: Request,
     engine: Box<dyn AsrEngine>,
+    /// The digest of everything about this run except the audio, computed once
+    /// at load.
+    ///
+    /// Costing it per file would be a mistake worth avoiding: it stats every
+    /// file of a 228 MB model and asks ffmpeg its version, and a batch of a
+    /// hundred files would pay that a hundred times to learn the same answer.
+    settings: String,
 }
 
 /// Whether the named engine can use a domain vocabulary.
@@ -110,6 +128,7 @@ impl Transcriber {
     /// Load the engine named by `request`.
     pub fn load(request: Request) -> Result<Self, Error> {
         let hardware = HardwareProfile::probe();
+        let threads = request.threads.unwrap_or_else(|| hardware.engine_threads());
 
         let mut registry = Registry::new();
         register_builtin_engines(&mut registry);
@@ -118,14 +137,27 @@ impl Transcriber {
             &request.engine,
             &verse_core::EngineConfig {
                 model_dir: request.models_dir.join(&request.engine),
-                threads: request.threads.unwrap_or_else(|| hardware.engine_threads()),
+                threads,
                 inverse_text_normalization: request.inverse_text_normalization,
                 max_output_tokens: request.max_output_tokens,
                 hotwords: request.hotwords.clone(),
             },
         )?;
 
-        Ok(Self { request, engine })
+        // The resolved thread count goes into the key, not `request.threads`.
+        // A caller leaving it unset gets cores − 1, so two machines run the
+        // same request with different thread counts — and ONNX reduction order
+        // is not invariant under that. Recording the request rather than the
+        // answer would let a cache carried between machines serve a result
+        // computed differently.
+        let settings =
+            settings_digest(&request, threads, verse_audio::ffmpeg_version().as_deref());
+
+        Ok(Self {
+            request,
+            engine,
+            settings,
+        })
     }
 
     /// Transcribe the file named by the request, publishing progress as it
@@ -146,6 +178,19 @@ impl Transcriber {
             kind: JobKind::FileTranscribe,
         });
 
+        // The cache is consulted here rather than in each front-end, and that
+        // placement is the whole reason a hit behaves. Every caller — the
+        // command line, the window, the benchmark — reaches the engine through
+        // this one method, so the event sequence below is written once instead
+        // of three times and cannot drift between them.
+        if let Some((cache, key)) = self.cache_key() {
+            if let Some(entry) = cache.get(&key) {
+                let transcription = from_entry(&entry);
+                announce(bus, job, &transcription);
+                return Ok(transcription);
+            }
+        }
+
         match self.run(job, bus, cancel) {
             Ok(transcription) => {
                 bus.publish(Event::TranscriptFinal {
@@ -153,6 +198,13 @@ impl Transcriber {
                     transcript: transcription.transcript.clone(),
                 });
                 bus.publish(Event::JobFinished { id: job });
+
+                // After the events, so a failure to store cannot be mistaken
+                // for a failure to transcribe. Storing is best-effort by
+                // design: the result is already in hand and the cache is a
+                // convenience.
+                self.store(&transcription);
+
                 Ok(transcription)
             }
             Err(error) => {
@@ -169,6 +221,28 @@ impl Transcriber {
                 Err(error)
             }
         }
+    }
+
+    /// The cache to look in and the key to look up, when there is one.
+    ///
+    /// `None` for every reason not to look: the cache is off, or the file
+    /// cannot be read to hash it. None of those is an error — the run simply
+    /// happens.
+    fn cache_key(&self) -> Option<(verse_store::Cache, String)> {
+        let (cache, verify) = self.request.cache.open()?;
+        let content = verse_store::content_digest(&self.request.input, verify).ok()?;
+        Some((cache.clone(), verse_store::key(&self.settings, &content)))
+    }
+
+    /// Keep a finished run, if there is anywhere to keep it.
+    fn store(&self, transcription: &Transcription) {
+        let Some((cache, key)) = self.cache_key() else {
+            return;
+        };
+        // Deliberately not reported. A cache that cannot be written makes the
+        // next run slower and nothing else, and a warning about it on every
+        // run of a read-only volume would be noise in place of information.
+        let _ = cache.put(&key, &to_entry(transcription));
     }
 
     /// Where this transcriber's files come from.
@@ -199,6 +273,7 @@ impl Transcriber {
                 transcript,
                 coverage,
                 recovered: false,
+                cached: false,
             });
         }
 
@@ -219,6 +294,7 @@ impl Transcriber {
             transcript,
             coverage,
             recovered: true,
+            cached: false,
         })
     }
 
@@ -266,6 +342,31 @@ impl Transcriber {
     }
 }
 
+/// Tell the bus that a result is finished, exactly as a run would have.
+///
+/// **Every segment, not just the final transcript.** The window assembles the
+/// list it shows from `TranscriptSegment`; `TranscriptFinal` only finalises.
+/// A cached result announced with the final transcript alone would therefore
+/// render as "没有识别到内容" while reporting success — an empty transcript
+/// that looks precisely like a finished one, which is the failure this whole
+/// project keeps having to design against.
+///
+/// The order matches `run`'s for the same reason: a listener that has been
+/// told the sequence either way must not be able to tell which happened.
+fn announce(bus: &EventBus, job: JobId, transcription: &Transcription) {
+    for segment in &transcription.transcript.segments {
+        bus.publish(Event::TranscriptSegment {
+            job,
+            segment: segment.clone(),
+        });
+    }
+    bus.publish(Event::TranscriptFinal {
+        job,
+        transcript: transcription.transcript.clone(),
+    });
+    bus.publish(Event::JobFinished { id: job });
+}
+
 /// Recognise one span, publishing each segment as it lands.
 ///
 /// The engine is reused across spans and reset between each, which is what
@@ -299,4 +400,124 @@ fn recognize(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+    use verse_core::{Segment, Subscription};
+
+    fn a_transcription(texts: &[&str]) -> Transcription {
+        Transcription {
+            transcript: Transcript {
+                segments: texts
+                    .iter()
+                    .enumerate()
+                    .map(|(index, text)| Segment {
+                        id: SegmentId(index as u64),
+                        start: Duration::from_millis(index as u64 * 1_000),
+                        end: Duration::from_millis(index as u64 * 1_000 + 900),
+                        text: (*text).to_string(),
+                    })
+                    .collect(),
+                language: None,
+            },
+            coverage: Coverage {
+                decoded_seconds: 2.0,
+                voiced_seconds: 2.0,
+                energetic_seconds: 2.0,
+            },
+            recovered: false,
+            cached: true,
+        }
+    }
+
+    /// What a listener sees, as a compact list of names.
+    fn announced(subscription: &Subscription) -> Vec<String> {
+        subscription
+            .drain()
+            .iter()
+            .map(|event| match &**event {
+                Event::TranscriptSegment { segment, .. } => format!("segment:{}", segment.text),
+                Event::TranscriptFinal { .. } => "final".to_string(),
+                Event::JobFinished { .. } => "finished".to_string(),
+                other => format!("other:{other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_cached_result_is_announced_segment_by_segment() {
+        // The assertion that matters. The window builds what it shows from
+        // `TranscriptSegment`, so a replay that skipped them would put an
+        // empty transcript on screen while reporting success — a result that
+        // looks finished and is not.
+        let bus = EventBus::new();
+        let subscription = bus.subscribe_all();
+
+        announce(&bus, JobId(1), &a_transcription(&["开放时间", "上午九点"]));
+        let seen = announced(&subscription);
+
+        assert_eq!(seen, ["segment:开放时间", "segment:上午九点", "final", "finished"]);
+    }
+
+    #[test]
+    fn the_replay_carries_the_text_not_just_the_count() {
+        // Counts would be satisfied by publishing placeholder segments, which
+        // would be a worse failure than publishing none: it would look right.
+        let bus = EventBus::new();
+        let subscription = bus.subscribe_all();
+
+        announce(&bus, JobId(1), &a_transcription(&["会议记录"]));
+
+        let text: Vec<String> = subscription
+            .drain()
+            .iter()
+            .filter_map(|event| match &**event {
+                Event::TranscriptFinal { transcript, .. } => {
+                    Some(transcript.segments.iter().map(|s| s.text.clone()).collect())
+                }
+                _ => None,
+            })
+            .next()
+            .expect("a final transcript");
+
+        assert_eq!(text, ["会议记录"]);
+    }
+
+    #[test]
+    fn an_empty_result_still_says_it_finished() {
+        // A silent file is a legitimate outcome, not a failure, and a listener
+        // waiting for the end must still be told.
+        let bus = EventBus::new();
+        let subscription = bus.subscribe_all();
+
+        let mut transcription = a_transcription(&[]);
+        transcription.transcript.segments.clear();
+        announce(&bus, JobId(1), &transcription);
+
+        assert_eq!(announced(&subscription), ["final", "finished"]);
+    }
+
+    #[test]
+    fn the_events_name_the_job_they_belong_to() {
+        // Two jobs can be in flight — the window cancels one and starts
+        // another — so an event without its job is an event a listener cannot
+        // place.
+        let bus = EventBus::new();
+        let subscription = bus.subscribe_all();
+
+        announce(&bus, JobId(7), &a_transcription(&["x"]));
+
+        for event in subscription.drain() {
+            let id = match &*event {
+                Event::TranscriptSegment { job, .. }
+                | Event::TranscriptFinal { job, .. }
+                | Event::JobFinished { id: job } => *job,
+                other => panic!("unexpected event: {other:?}"),
+            };
+            assert_eq!(id, JobId(7));
+        }
+    }
 }

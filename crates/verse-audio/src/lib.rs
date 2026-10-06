@@ -17,7 +17,10 @@ pub mod vad;
 pub use blocks::FixedBlocks;
 pub use convert::{transcode, TranscodeRequest};
 pub use decode::FfmpegDecoder;
-pub use ffmpeg::{is_available as ffmpeg_available, locate as locate_ffmpeg, FFMPEG_ENV};
+pub use ffmpeg::{
+    is_available as ffmpeg_available, locate as locate_ffmpeg, version as ffmpeg_version,
+    FFMPEG_ENV,
+};
 pub use vad::{
     SileroVad, VadSettings, DEFAULT_MIN_SILENCE_SECONDS, DEFAULT_MIN_SPEECH_SECONDS,
     DEFAULT_THRESHOLD, MAX_SPAN_SECONDS,

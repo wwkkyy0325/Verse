@@ -65,6 +65,12 @@ pub struct FileResult {
     pub coverage: Option<f64>,
     /// The segmenter was distrusted and the file recognised whole.
     pub recovered: bool,
+    /// The transcript came from the cache rather than from the recogniser.
+    ///
+    /// The field that explains why a file `elapsed_ms` says took no time at
+    /// all. Without it, a caller timing a batch would conclude the second run
+    /// was faster rather than that it did not happen.
+    pub cached: bool,
     pub language: Option<String>,
     /// The whole transcript as one string, newline separated.
     pub text: Option<String>,
@@ -158,6 +164,7 @@ impl FileResult {
             segment_count: transcript.segments.len(),
             coverage: transcription.coverage.ratio(),
             recovered: transcription.recovered,
+            cached: transcription.cached,
             language: transcript.language.clone(),
             text: Some(transcript.to_text()),
             warnings: Vec::new(),
@@ -191,6 +198,7 @@ impl FileResult {
             segment_count: 0,
             coverage: None,
             recovered: false,
+            cached: false,
             language: None,
             text: None,
             warnings: Vec::new(),
@@ -270,6 +278,7 @@ mod tests {
             segment_count: 1,
             coverage: Some(0.998),
             recovered: false,
+            cached: false,
             language: None,
             text: Some("开放时间".to_string()),
             warnings: Vec::new(),
@@ -324,6 +333,7 @@ mod tests {
             "segmentCount",
             "coverage",
             "recovered",
+            "cached",
             "language",
             "text",
             "warnings",

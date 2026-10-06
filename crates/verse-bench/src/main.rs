@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use verse_core::{CancelToken, EventBus, JobId};
-use verse_pipeline::{Request, Transcriber};
+use verse_pipeline::{CachePolicy, Request, Transcriber};
 
 use report::{Dataset, Scored};
 
@@ -74,6 +74,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         guard: options.guard,
         hotwords: options.hotwords.clone(),
         threads: None,
+        // Deliberately off, and not configurable. A cached benchmark measures
+        // the cache: the second run of a dataset would report the time it took
+        // to read a file back, and comparing that against a first run would be
+        // the "comparing two things that are not comparable" mistake this
+        // project has already paid for once.
+        cache: CachePolicy::Disabled,
     };
 
     eprintln!("loading {} ...", options.engine);

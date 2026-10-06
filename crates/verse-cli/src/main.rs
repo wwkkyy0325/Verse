@@ -147,6 +147,12 @@ struct TranscribeOptions {
     /// How many files to recognise at once. One engine per worker, so this
     /// costs a model's worth of memory each.
     jobs: usize,
+    /// Skip the result cache entirely.
+    ///
+    /// For timing a real run, and for the case where a cached transcript is
+    /// being distrusted. `VERSE_NO_CACHE` does the same thing for a caller who
+    /// cannot change the command.
+    no_cache: bool,
 }
 
 impl TranscribeOptions {
@@ -162,6 +168,7 @@ impl TranscribeOptions {
             json: false,
             hotwords: None,
             jobs: 1,
+            no_cache: false,
         };
 
         let mut i = 0;
@@ -185,6 +192,7 @@ impl TranscribeOptions {
                 "--vad" => options.vad = Some(PathBuf::from(take_value(args, &mut i, "--vad")?)),
                 "--fail-fast" => options.fail_fast = true,
                 "--json" => options.json = true,
+                "--no-cache" => options.no_cache = true,
                 "-j" | "--jobs" => {
                     let raw = take_value(args, &mut i, "--jobs")?;
                     let jobs: usize = raw
@@ -303,6 +311,18 @@ fn has_audio_extension(path: &Path) -> bool {
         .is_some_and(|e| AUDIO_EXTENSIONS.contains(&e.as_str()))
 }
 
+/// Whether this run keeps and consults a transcript cache, and where.
+///
+/// The flag wins over the environment. A caller who typed `--no-cache` meant
+/// it, while `VERSE_NO_CACHE` left set in a shell profile is exactly the kind
+/// of thing one forgets having done.
+fn cache_policy(no_cache: bool) -> verse_pipeline::CachePolicy {
+    if no_cache || verse_store::caching_refused() {
+        return verse_pipeline::CachePolicy::Disabled;
+    }
+    verse_pipeline::CachePolicy::under(&verse_store::data_dir(&verse_store::Roots::from_env()))
+}
+
 /// Where each input's transcript goes.
 ///
 /// With one input the rules are exactly what they were before this command
@@ -397,6 +417,7 @@ fn transcribe_usage() -> String {
     s.push_str("                         1 GB for Qwen3.\n");
     s.push_str("      --json             One JSON document on stdout\n");
     s.push_str("      --fail-fast        Stop at the first file that fails\n");
+    s.push_str("      --no-cache         Recognise even if the result is already cached\n");
     s.push_str("\nA directory argument is expanded to the audio files beneath it, sorted.\n");
     s
 }
@@ -440,6 +461,7 @@ fn transcribe(options: &TranscribeOptions) -> Result<(), Failure> {
         guard: GuardSettings::default(),
         hotwords: options.hotwords.clone(),
         threads: None,
+        cache: cache_policy(options.no_cache),
     };
 
     // **Loaded once for the whole batch.** This is the reason `Transcriber`

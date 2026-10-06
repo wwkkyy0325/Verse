@@ -23,6 +23,9 @@ verse-audio.workspace = true
 verse-asr.workspace = true
 verse-model.workspace = true
 verse-pipeline.workspace = true
+# Per-user directories and the result cache. Used directly because the window
+# resolves where a transcript is saved, which is not the pipeline's business.
+verse-store.workspace = true
 
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }

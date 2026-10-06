@@ -148,7 +148,7 @@ rendering rounded for readability would collapse two thresholds into one
 string. The test now asserts that rounding premise explicitly before relying
 on it.
 
-## [ ] 3. The pipeline consults the cache
+## [x] 3. The pipeline consults the cache
 
 `Request` gains the policy; `Transcription` gains `cached`. On a hit publish
 `JobStarted` → every `TranscriptSegment` → `TranscriptFinal` → `JobFinished`.
@@ -159,6 +159,45 @@ comparable" mistake.
 
 **Verify:** an event-order test asserting one segment per cached segment; a CLI
 run twice showing the second marked `cached` with a much smaller `elapsedMs`.
+
+**Done.** Four tests on the announcement, and the end-to-end run:
+
+```
+run 1 (cold)   cached = False   elapsedMs = 307
+run 2 (warm)   cached = True    elapsedMs = 0
+```
+
+The outputs of the cold and warm runs are byte-identical, and so are the runs
+under `--no-cache` and `VERSE_NO_CACHE=1` — the cache changes the time and
+nothing else.
+
+**The escape hatches work, and the empty string is not one of them.** `--no-cache`
+and `VERSE_NO_CACHE=1` both report `cached = false` against a warm cache, while
+`VERSE_NO_CACHE=` (set but empty) reports `cached = true`, because an empty
+value means unset — the same rule the directory resolution applies.
+
+**A one-byte change is caught.** In a copy of the sample, one byte was flipped
+with the length left alone: the next run reported `cached = false`. The bounded
+digest is doing its job on a small file, where it reads the whole thing.
+
+The first attempt at that test silently did nothing — the byte flip ran in a
+Python subprocess, which does not translate `/tmp` the way the shell does, so
+the file was never touched and the cache correctly reported a hit for an
+unchanged file. The result looked like a failure of the digest and was a
+failure of the test. Second attempt passes a Windows path.
+
+**A correction to what this buys.** `elapsedMs` measures the transcription and
+not the model load, and `Transcriber::load` still runs on a hit — so the saving
+here is 307 ms of a ~1.4 s run on a five-second clip, where the 228 MB model
+load dominates. For a long file the ASR is the bulk and the cache takes nearly
+all of it. The `probe` API that would skip the load is in "not in this round"
+below, and this measurement is the reason it stays there: on short files the
+load is the cost, and on long ones it is already amortised.
+
+`verse-bench` passes `CachePolicy::Disabled`, deliberately and without a flag:
+a cached benchmark measures the cache, and comparing that against a real run
+would be the "two things that are not comparable" mistake this project has
+already paid for once.
 
 ## [ ] 4. Resume checkpoints
 

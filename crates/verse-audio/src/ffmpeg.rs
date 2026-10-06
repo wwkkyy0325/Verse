@@ -71,3 +71,24 @@ pub fn locate() -> Result<PathBuf> {
 pub fn is_available() -> bool {
     locate().is_ok()
 }
+
+/// The first line of `ffmpeg -version`, for the ffmpeg that would be used.
+///
+/// Decoding is reproducible only for a given binary. Two builds can resample
+/// the same input to different samples, so a transcript is the same result only
+/// under the same ffmpeg — which is why anything that caches recognition needs
+/// to know which one produced it.
+///
+/// `None` when ffmpeg is absent or says nothing. A caller keying a cache should
+/// read that as "unknown", and deciding what to do about unknown is the
+/// caller's business rather than something to guess at here.
+pub fn version() -> Option<String> {
+    let ffmpeg = locate().ok()?;
+    let output = Command::new(ffmpeg).arg("-version").output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+
+    text.lines()
+        .next()
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+}

@@ -15,6 +15,11 @@ verse-core.workspace = true
 verse-audio.workspace = true
 verse-model.workspace = true
 verse-pipeline.workspace = true
+# Where the cache and the output directory live. Named directly rather than
+# reached through the pipeline, because the command has to resolve an output
+# path whether or not anything is being recognised — and the pipeline does not
+# re-export path resolution, which is not its business.
+verse-store.workspace = true
 
 # The JSON report. Both are already in this workspace's build graph — the
 # model catalogue and the window's bridge use them — so this adds a manifest

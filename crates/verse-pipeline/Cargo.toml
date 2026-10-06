@@ -10,3 +10,6 @@ description = "Transcription orchestration shared by the CLI, the application an
 verse-core.workspace = true
 verse-audio.workspace = true
 verse-asr.workspace = true
+# The result cache. It depends on no workspace crate, so this pulls in the
+# replay format and the key, not the engine the pipeline already has.
+verse-store.workspace = true

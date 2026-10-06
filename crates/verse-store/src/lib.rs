@@ -38,5 +38,5 @@ pub use cache::{Cache, Usage};
 pub use dirs::{data_dir, notices, output_dir, Roots, FOLDER};
 pub use entry::{CoverageDto, Entry, SegmentDto, Span, TranscriptDto};
 pub use identity::FileId;
-pub use key::{content_digest, key, Fingerprint, Verify, SEMANTICS};
+pub use key::{caching_refused, content_digest, key, Fingerprint, Verify, SEMANTICS};
 pub use output::{destination, Choice, Ownership};
