@@ -13,12 +13,20 @@ Tooling:
 
 ## [x] 1. Take the pipeline out of the application
 
-`verse-pipeline` now holds the decode → segment → recognise chain, shared by
-the CLI, the window and the benchmark.
+`verse-pipeline` now holds the decode → segment → recognise chain, used by the
+window and the benchmark.
 
 It had already been copied once, between `verse-cli` and `verse-app`. A
 benchmark scoring a third copy would have been measuring a program nobody
 ships — and the boundary decisions are precisely what is under examination.
+
+**Correction, added later.** The chain was extracted from `verse-app`, not
+from `verse-cli`, and `verse-cli` was left carrying its own copy — it does not
+depend on `verse-pipeline` at all. The two are behaviourally equivalent today
+(verified line by line while chasing §13), so no measurement here is
+invalidated, but the sentence above claimed more than was true. The copies are
+now two, not one, and `verse-cli` is the one that should fold in: it has no
+reason to own a second implementation of anything.
 
 The recogniser is also loaded **once per run** rather than once per file. At
 228 MB a load, scoring thousands of utterances any other way is mostly a test
@@ -132,9 +140,10 @@ problem.
 work that reading the numbers was not enough, but the first time the
 mechanism I inferred from the failures was simply wrong.
 
-Why those sentences lose their second half is still unknown. The next step is
-one utterance traced through the pipeline — what spans come out, and what the
-recogniser is handed — rather than another parameter sweep.
+Why those sentences lose their second half was still unknown at this point.
+The next step was one utterance traced through the pipeline — what spans come
+out, and what the recogniser is handed — rather than another parameter sweep.
+That trace is §13, and the answer was not about sentence boundaries at all.
 
 ## [x] 6. The generation budget is not a bottleneck either
 
@@ -342,3 +351,163 @@ questions.
   audio. It does — but that note was written before the punctuation stage
   existed, so it was comparing a two-stage pipeline against a one-stage
   one. The comparison above is the first fair one.
+
+## [x] 13. The truncated sentences were never recognised
+
+§5 left one question open: why do some sentences come back with their second
+half missing? The answer is that **the second half was never given to the
+recogniser.** The detector discarded it, and nothing in the pipeline noticed.
+
+### The trace
+
+`verse transcribe` prints how many spans it produced, which is enough to see
+it. The two worst cases from §5:
+
+| file | length | span handed to the recogniser |
+|---|---|---|
+| 000242 | 5.03 s | **0.00 → 1.83 s** |
+| 000465 | 3.87 s | **2.67 → 3.84 s** |
+
+For `000242` the recogniser saw the first 1.8 seconds and nothing else, which
+is exactly the fragment it returned. For `000465` it saw only the last 1.2
+seconds — the first two thirds of the file were dropped before recognition,
+which is why the output is `别淋湿啦。` and the reference is `妈妈，妈妈，快来，
+别淋湿啦！`.
+
+Both were reported as one span and one segment. Nothing errored. A recording
+that loses most of its audio produces a short, confident, wrong subtitle.
+
+**A false start worth recording.** The first attempt to measure this ran
+against a `target/release/verse.exe` built at 00:58, fourteen hours before the
+VAD default changed. It reported `0 spans` for files the benchmark had just
+scored successfully, which looked like a discrepancy between two code paths
+and was actually a stale binary. Rebuild before believing a difference.
+
+### What the detector is actually seeing
+
+Silero's per-window speech probability is not exposed by the Rust binding, so
+it was measured directly — the ONNX model is small and runs in onnxruntime
+under Python. Measured over the whole file:
+
+| file | mean prob | max prob | windows above 0.05 |
+|---|---|---|---|
+| 000001 (works) | 0.830 | 1.000 | 100% |
+| 000242 (fails) | 0.032 | **0.338** | 18% |
+| 000465 (fails) | 0.052 | **0.317** | 41% |
+
+Healthy audio sits at 1.0. These files never reach 0.35 anywhere. The detector
+is not cutting a sentence in the wrong place — as far as it can tell there is
+almost no speech in the file at all.
+
+**The probe had to be validated too.** The first version reported 0.001 for
+every file, including ones that transcribe perfectly; Silero v5 requires the
+previous window's last 64 samples to be prepended as context, and without them
+the model returns noise. It was only trusted after reproducing a known-good
+file at 1.000. A measuring instrument needs a known-good reading before its
+readings mean anything.
+
+### How general it is
+
+Every one of the 898 conversation utterances, bucketed by the detector's own
+confidence:
+
+| max probability | utterances | CER | exact |
+|---|---|---|---|
+| ≥ 0.5 | 887 | 5.74% | 52.1% |
+| 0.2 – 0.5 | 10 | **25.4%** | 20.0% |
+| < 0.2 | 1 | **50.0%** | 0.0% |
+
+Eleven utterances never cross 0.5, and they are catastrophic. They account
+for 37 of the 837 errors in the set — **4.4% of all errors** — and if they
+were perfect the overall rate would move from 5.95% to 5.68%.
+
+So the damage is severe per file and small in aggregate. Both halves matter:
+a 0.27-point average improvement is not worth much, but a user whose recording
+happens to hit this gets a blank or a fragment with no indication anything
+went wrong, which is a worse failure than a 6% character rate.
+
+The same mechanism accounts for nearly all truncation elsewhere: of the 887
+healthy utterances, only 4 produce a hypothesis under 60% of the reference
+length.
+
+### Three explanations that did not survive testing
+
+Reading the numbers suggested a cause each time. Each was tested and each was
+wrong, which is the point of testing them:
+
+- **`min_silence_duration`.** §5 already showed it moves nothing across the
+  set. It does matter *on these files* (100 s of minimum silence recovers
+  `000242` from 8 errors to 4), but only when the detector has already started
+  a segment early enough to extend. For `000465` the first detection is at
+  2.67 s, so extending the ending recovers nothing. Not a fix.
+- **The threshold.** Lowering it from 0.05 to 0.02 improves these 11 files
+  from 37.76% to 32.65%. Real, and nowhere near enough.
+- **Low-frequency loss.** The failing files have almost no energy below
+  300 Hz (1.5% and 0.8%, against 32% for a healthy file), and a lost
+  fundamental is a plausible way to defeat a speech detector. **Falsified**:
+  high-passing a healthy file to the same 4.7% low-frequency energy leaves its
+  probability at 1.000, and the phone dataset has 42% low-frequency energy
+  with no failures at all. The correlation is real; the causation is not.
+- **Harmonic periodicity.** Also plausible, also falsified: the failing files
+  are *more* periodic (0.51–0.70) than the healthy ones (0.42–0.62).
+
+**What makes Silero score these particular files low is still not known.** It
+is not level — the failing files are louder than average. It is not
+band-limiting, and it is not aperiodicity. Three plausible mechanisms have
+been eliminated and none has been confirmed, which is worth stating plainly
+rather than picking the least-refuted one.
+
+### Is the audio recoverable
+
+Feeding the whole file to the recogniser with no segmentation at all:
+
+| file | reference | through the pipeline | whole file |
+|---|---|---|---|
+| 000242 | 逛集市喽，去逛集市喽。妈妈，你快点儿。 | 逛集市了去逛集市了。 | 逛集市了，去逛集市喽，斑妈，快点。 |
+| 000429 | 爸爸，你把小熊泰迪给弄丢了。 | 你把小熊泰迪给弄丢了。 | **爸爸，你把小熊泰迪给弄丢了。** |
+| 000453 | 你好，丹尼，我们迷路了。 | 我们迷路了。 | **你好，丹尼，我们迷路了。** |
+| 000465 | 妈妈，妈妈，快来，别淋湿啦！ | 别淋湿啦。 | 妈妈妈妈，快来别淋湿了。 |
+| 000614 | 妈妈快看，是雪人！雪人，我来喽！ | 是雪人雪人，我来了。 | 哇，妈妈快看是雪人，雪人，我来喽。 |
+
+Two become exact and the rest go from fragments to near-complete. The audio
+was always fine; only the detector could not see it.
+
+### The counter-measurement
+
+Before concluding anything about removing the detector, the same comparison
+on 200 healthy utterances:
+
+**186 of the 200 are identical.** no-VAD is better on 10, worse on 4, and the
+net is about ten characters out of roughly four thousand. On healthy audio the
+detector costs nothing worth measuring.
+
+So this is not an argument against segmentation. Segmentation is what makes a
+four-hour recording possible at all — it bounds memory to one span and gives
+subtitles their timestamps. Deleting a four-hour file's spans and recognising
+the whole thing would hold 921 MB of samples resident, which is the exact
+failure the segmentation exists to prevent.
+
+The argument is narrower: **when the detector finds little speech in a file
+that plainly contains some, the pipeline currently believes it and drops the
+audio.** That is the defect.
+
+### What follows
+
+The defect has one shape — silent, total, per-file audio loss — and the guard
+that catches it is a coverage check rather than any better parameter:
+
+- the decoder already knows how much audio it produced;
+- the segmenter already knows how much of it it kept;
+- when the ratio is implausible for a file that is not silent, the honest
+  answer is to recognise the audio anyway rather than to return a fragment.
+
+Two constraints on whatever is built:
+
+1. **It must not fire on silence.** A recording with a long lead-in is not a
+   detector failure, and re-recognising it costs time for nothing.
+2. **It must stay bounded.** Falling back only makes sense where the whole
+   file can be held; for a long recording the fallback has to be per-region,
+   or the memory guarantee goes out with it.
+
+Not implemented here. The measurement is the deliverable of this section; the
+guard is a product change and belongs in its own task with its own numbers.

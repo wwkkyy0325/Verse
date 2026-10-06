@@ -622,3 +622,143 @@ diff is where to find the solution.
 Three, down from four. The rule applied was not "is it used" but "does
 anything reach it" — and for both the punctuation model and `TextChain`, the
 answer was no.
+
+## 2026-10-06 — The sentences that lost their second half
+
+§5 of `tasks/asr-evaluation.md` left a question open: some utterances come back
+with half the sentence missing, and neither `min_silence_duration` nor the
+decoder's token budget explained it. Traced one utterance through the pipeline
+and found the answer — **the missing half was never handed to the recogniser.**
+
+`verse transcribe` on `000242`, a 5.03-second file, reports one span covering
+**0.00 → 1.83 s**. On `000465`, a 3.87-second file, one span covering
+**2.67 → 3.84 s** — the first two thirds discarded. No error, no warning; a
+fragment of audio becomes a short, confident, wrong subtitle.
+
+The detector, not the recogniser. Silero's own per-window probability, measured
+directly with onnxruntime, peaks at **0.338** on that file where healthy audio
+sits at 1.000. Across all 898 conversation utterances, 887 reach 0.5 or above
+and score 5.74% CER; the 11 that never do score **28%**.
+
+### What this changed
+
+Nothing in the product yet — the section is a measurement, not a fix. What it
+changed is the standing explanation: the truncation was an audio-loss bug, not
+a segmentation-tuning problem, and the pipeline has no way to notice it.
+
+### Three hypotheses eliminated
+
+Each looked convincing from the numbers and each was tested.
+
+- **Low-frequency loss.** The failing files have 1.5% of their energy below
+  300 Hz against 32% for a healthy one, and a missing fundamental is a
+  reasonable way to defeat a speech detector. High-passing a healthy file to
+  the same energy distribution leaves its probability at 1.000, and the phone
+  dataset has 42% low-frequency energy with zero failures. Correlation only.
+- **Harmonic periodicity.** The failing files are *more* periodic, not less.
+- **The threshold.** 0.02 instead of 0.05 improves the 11 files from 37.76% to
+  32.65% and does not come close to fixing them.
+
+The root cause of Silero's low score is still unknown. That is recorded as
+unknown rather than as the least-refuted hypothesis.
+
+### A measurement that had to be repaired before it was believed
+
+The first probability probe returned 0.001 for every file, including ones that
+transcribe perfectly — Silero v5 needs the previous window's trailing 64
+samples prepended as context. It was only trusted after reproducing a
+known-good file at 1.000. Similarly, the first span count was read off a
+`target/release/verse.exe` built fourteen hours before the VAD change and
+reported `0 spans` for files the benchmark had just scored; rebuild before
+believing a difference.
+
+### Also corrected
+
+§1 of `tasks/asr-evaluation.md` claimed the CLI shares `verse-pipeline` with
+the window. It does not — the chain was extracted from `verse-app`, and
+`verse-cli` still carries its own copy. The two are behaviourally equivalent,
+so no measurement is invalidated, but the claim was wrong and is now marked.
+
+## 2026-10-06 — A guard against silent audio loss, and one fewer pipeline
+
+§13 of `tasks/asr-evaluation.md` established that the segmenter sometimes
+discards most of a file and the pipeline believes it. This builds the defence,
+and removes the duplicate pipeline found on the way.
+
+### The guard
+
+`verse-pipeline` now measures what the segmenter did — the audio decoded, the
+audio kept, and the audio that was not silence — and re-recognises a file whole
+when the kept fraction is implausible. The measurement came first and changed
+nothing: the run that introduced it produced a transcript byte-identical to the
+one before it.
+
+The three quantities are chosen so the measure means something. **Kept audio is
+the union of the spans' time ranges, merged rather than summed**, because spans
+carry leading padding and summing would credit the same audio twice — inflating
+it makes the guard fire less often, which is the wrong direction to be wrong
+in. **Silence is judged against the file's own loudest window**, not an absolute
+level, so a quietly recorded file is not mistaken for an empty one.
+
+The fallback cuts at a fixed interval rather than holding the file, because the
+memory ceiling is what makes long recordings workable at all and the fallback
+must not spend it.
+
+### The floor, and what it cost
+
+Chosen by arming the guard at 0.995 to get every file's recovered transcript,
+then composing any other floor from it — exact, because the decision is per
+file. Verified afterwards: the composed prediction for 0.70 was 9 fired and 798
+errors, and running it gave 9 and 798.
+
+**0.70 is the default.** Nine files fire on the conversation set and **all nine
+improve**, the worst going from 15 errors in 16 characters to 1; three become
+exact. The mean falls 6.84% → 6.52%. Higher floors recover more — 0.97 fires 44
+times for 0.56 points — but start damaging files that were already right, by a
+character or two. The first such file sits at coverage 0.730, so 0.70 is the
+highest round value with any margin.
+
+**No false positives.** Of 5049 utterances across five datasets, the guard
+recovers 9 and all 9 are in the conversation set: meeting, phone, documentary
+and sports recovered **zero**. On a held-out sample of 200 healthy conversation
+files, 199 were byte-identical and one improved.
+
+### The four-hour case
+
+Re-measured, because the guard's worst behaviour would be a full second pass
+over a long recording. On a 4.01-hour file: coverage **100%**, so it does not
+fire; 931 segments; 454 s wall (**31.8× realtime**); peak RSS **414 MB**, flat
+from 409 MB once loaded to 412 MB at the end. The accumulator costs about
+1.2 MB for four hours. Run twice, identical output.
+
+### What it does not fix
+
+**Coverage measures damage, not failure.** Of the eleven files §13 identified
+as defeating the detector, only four have low coverage. The others kept 80–100%
+of their audio and were mis-recognised anyway. The guard catches the losses,
+which are the catastrophic ones, and misses the rest — recorded rather than
+papered over.
+
+### A wrong number, corrected
+
+An analysis script divided normalised error counts by raw reference lengths,
+punctuation included, and reported 5.95% where the truth is 6.84%. The figures
+in §13 that came from it are corrected; the error was in the analysis, never in
+`verse-bench`.
+
+### One fewer copy of the pipeline
+
+`verse-cli` did not depend on `verse-pipeline` — it carried its own decode →
+segment → recognise, which `asr-evaluation.md` §1 had wrongly claimed was
+shared. It now uses `Transcriber`, and the duplicate `recognize`, VAD setup and
+decoder setup are gone. Verified by 30 files whose SRT text matches the
+pipeline's output exactly, and by three whose output is unchanged from the old
+binary.
+
+The CLI gained the coverage line in exchange for the span count it used to
+print — the span count is what cracked §13, but coverage is the better number
+and the guard now reports itself when it fires.
+
+`verse-asr` moved to the CLI's dev-dependencies: only the `transcribe` example
+still reaches an engine directly, deliberately skipping the detector to
+separate a recogniser that failed from one that was never given the audio.

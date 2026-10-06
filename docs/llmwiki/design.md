@@ -109,10 +109,14 @@ pub trait TextSink: Send {
 Phase 1:
 
 ```
-file ──▶[decode]──▶[VAD segment]──▶[parallel ASR]──▶[punctuate]──▶[segments]──▶ CLI/GUI, txt/srt
-      ffmpeg         Silero           N threads     CT-Transformer    +timestamps   verse-core::export
+file ──▶[decode]──▶[VAD segment]──▶[ASR]──▶[segments]──▶ CLI/GUI, txt/srt
+      ffmpeg         Silero         per span   +timestamps   verse-core::export
       sidecar
 ```
+
+The segmenter is the one stage that can lose audio, so it is not trusted
+blindly — see §4.8. Both registered engines punctuate internally, so there is
+no punctuation stage (§5.4).
 
 Phase 2:
 
@@ -192,6 +196,46 @@ Every format decision collapses into one: use ffmpeg, and never link it.
 That obligation is real rather than a footnote: requiring a separate ffmpeg install would break the zero-configuration goal (§3, C6) harder than any model download, because it is a system-level install rather than a file fetch.
 
 **Resampling happens in ffmpeg.** Decoding asks for 16 kHz mono directly (`-ar 16000 -ac 1`) so ffmpeg's proper resampler does the work. sherpa-onnx also ships a `LinearResampler`, but linear interpolation is a poor fit for 44.1 kHz → 16 kHz; letting ffmpeg handle it is both simpler and better.
+
+### 4.8 The coverage guard
+
+**Every other stage can fail loudly. The segmenter fails silently and destroys
+the input.** A recogniser that cannot hear produces wrong text, which is
+visible; a segmenter that decides a file contains no speech produces a short
+subtitle, which is indistinguishable from a short recording. Measured: 11 of
+898 utterances, where the detector's own confidence never rises above 0.5 and
+whose character error rate is 28% against 5.7% for everything else — see
+`tasks/asr-evaluation.md` §13.
+
+So the pipeline measures what the segmenter did and refuses to believe an
+implausible reading. Three quantities, in samples of the decoded stream:
+**decoded**, **kept** — the *union* of the spans' time ranges, merged rather
+than summed, because spans carry leading padding and summing would credit the
+same audio twice — and **energetic**, the audio that is not silence, judged
+against the file's own loudest window rather than an absolute level so that a
+quiet recording is not mistaken for an empty one.
+
+When the kept fraction falls below `GuardSettings::floor`, and there was at
+least `min_energetic_seconds` of sound to judge, the file is recognised whole
+in fixed-length blocks and the first transcript is discarded —
+`Event::TranscriptDiscarded` tells the interface, which has already been shown
+it.
+
+Two properties are load-bearing and neither is incidental:
+
+- **The fallback does not lift the memory ceiling.** It cuts at the same
+  interval the detector's spans are capped at, because holding a four-hour
+  recording resident is the failure segmentation exists to prevent.
+- **It is tuned to be safe rather than effective.** The floor is 0.70, below
+  the point where recovery starts damaging files that were already right.
+  Across 5049 utterances in five datasets it fires nine times, all in the one
+  dataset with the problem, and every one improves.
+
+**It is a guard, not a repair.** Of the eleven files known to defeat the
+detector, only four have low coverage; the rest kept nearly all their audio
+and were mis-recognised anyway. This catches the losses, which are the
+catastrophic ones, and does not catch the rest. The root cause of the low
+confidence is still unknown.
 
 ## 5. Engine and model selection
 
