@@ -82,7 +82,7 @@ missing the `i += 1` that every other parser in this file ends with, because
 
 The `grep` for every restatement of the offline rule returns only amended text.
 
-## [ ] 2. Jobs: submit, poll, list, cancel
+## [x] 2. Jobs: submit, poll, list, cancel
 
 `serve/jobs.rs` with the state, the worker and a `Runner` seam so the lifecycle
 is testable without weights — the same shape as `keep::Loader`.
@@ -93,6 +93,53 @@ once; cancel-while-running settles only when the runner returns; two submits
 never overlap; the 33rd queued submit gets `429`. With the real keeper and an
 empty models directory, a job lands `failed` with `kind: "model"`. With the real
 model, a job on the sample clip reaches `done`.
+
+**Done**, together with the progress drain and `GET /models` — the plan put the
+drain in step 3 and `/models` in step 4, but leaving a `progress` field that
+always reads zero and a `models` endpoint a client would obviously want is worse
+than moving them. Retention stays in step 3.
+
+Driven from Python against the real model, on a real socket:
+
+```
+job 1: queued → running → done
+  transcript        "开放时间早上9点至下午5点。"
+  segmentCount      1
+  submittedAtMs 2125 · startedAtMs 2125 · finishedAtMs 3683 · elapsedMs 1558
+
+12 jobs submitted → 11 queued, 1 running
+  DELETE the queued one   200 cancelled
+  DELETE it again         409   DELETE a stranger  404
+  at the end              0 queued, not running, 12 retained
+
+no model installed → 409 kind "model", message naming `verse model fetch`
+```
+
+**Three bugs, all found by running it.**
+
+One: `submittedAtMs` was measured from the job's own start and `finishedAtMs`
+from the worker's, so a job reported `submittedAtMs: 1604` and
+`finishedAtMs: 5`. Three timestamps from three origins are not timestamps. They
+now share the service's start, and `elapsedMs == finished − started` exactly.
+
+Two, and this one was my own documentation overclaiming: I wrote that
+`elapsedMs` is "recognition time only, comparable with the CLI's report". It is
+— for every job except the one that pays the model load. Measured: the first job
+at 1558 ms, then 272 ms cold and 242 ms warm for the same clip against the CLI's
+307 ms. The doc comment now says which job is the slow one instead of implying
+none is.
+
+Three: `GET /models` was missing, so the no-model test could not check the
+vocabulary. It reuses `report::ModelList` and `ModelEntry` — the same structs
+`verse model list --json` builds — so the two cannot drift.
+
+**And two tests of mine were racy.** Both asserted on the queue length without
+first pinning the worker, so whether the first job had been picked up was
+scheduling rather than fact. Both now wait for it to be running. The suite was
+run three times to check.
+
+The transcript arriving as mojibake in one run was the console's cp936
+rendering, not the wire: over HTTP the text is exactly the expected Chinese.
 
 ## [ ] 3. Progress, retention, connection cap
 

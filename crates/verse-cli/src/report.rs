@@ -15,7 +15,7 @@
 //! the consumer needs `?.` on every access and can never tell "absent" from
 //! "this build does not have that field".
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use verse_core::ErrorKind;
 use verse_pipeline::Transcription;
@@ -47,7 +47,7 @@ pub struct Report {
     pub results: Vec<FileResult>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileResult {
     pub input: String,
@@ -129,6 +129,40 @@ pub struct CacheUsage {
     pub temporary_bytes: u64,
 }
 
+/// What a client asks for when it submits a job.
+///
+/// The field names match the command line's options, so a person who has read
+/// `verse transcribe --help` has read this.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobRequest {
+    /// An absolute path. A relative one would resolve against the service's
+    /// working directory, which is not a thing the service can know on the
+    /// client's behalf.
+    pub input: String,
+    /// `srt` or `txt`. Affects the `format` field of the result, not the
+    /// transcript, which is always returned in full.
+    pub format: Option<String>,
+    pub engine: Option<String>,
+    pub hotwords: Option<String>,
+    /// Run even if the result is already cached.
+    pub no_cache: Option<bool>,
+}
+
+/// How far a running job has got.
+///
+/// **No percentage, deliberately.** The decoder does not report a total length —
+/// the pipeline publishes `fraction: 0.0` for exactly that reason — so a ratio
+/// here would be a fabricated number. Seconds elapsed and segments found are
+/// what is actually known; a client that wants a fraction can compare against
+/// its own expectation.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Progress {
+    pub segments: usize,
+    pub position_ms: u64,
+}
+
 /// What `verse serve` is and what it is doing.
 ///
 /// The first thing a client asks after finding the discovery file: is this the
@@ -140,7 +174,22 @@ pub struct Health {
     pub ok: bool,
     pub service: ServiceInfo,
     pub model: ModelInfo,
+    pub jobs: JobsInfo,
     pub models_dir: String,
+}
+
+/// What the queue is doing, and what it is allowed to do.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobsInfo {
+    pub queued: usize,
+    pub running: bool,
+    /// How many finished jobs are held for a client to collect.
+    pub retained: usize,
+    /// The bounds, reported so a client can tell "the queue is nearly full"
+    /// from "the queue is broken" without reading this program's source.
+    pub max_queued: usize,
+    pub max_retained: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -181,7 +230,7 @@ pub struct Cleanup {
     pub bytes: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SegmentDto {
     pub start_ms: u64,
@@ -189,7 +238,7 @@ pub struct SegmentDto {
     pub text: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ErrorDto {
     /// Lower case, matching the exit-code vocabulary, so a caller can branch

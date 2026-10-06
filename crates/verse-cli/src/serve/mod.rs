@@ -14,6 +14,7 @@
 //! --json` already emits.
 
 mod http;
+mod jobs;
 mod router;
 
 use std::io::Write;
@@ -102,7 +103,8 @@ impl Config {
 
 /// What every request handler is given.
 pub struct Server {
-    pub keeper: ModelKeeper,
+    pub keeper: Arc<ModelKeeper>,
+    pub jobs: jobs::Jobs,
     pub models_dir: std::path::PathBuf,
     pub engine: String,
     pub token: String,
@@ -161,8 +163,11 @@ pub fn run(config: Config) -> Result<(), String> {
         .port();
 
     let bus = EventBus::new();
+    let keeper = Arc::new(ModelKeeper::with_timeout(bus.clone(), config.idle));
+
     let server = Arc::new(Server {
-        keeper: ModelKeeper::with_timeout(bus.clone(), config.idle),
+        jobs: jobs::Jobs::new(Arc::clone(&keeper), bus.clone(), None),
+        keeper,
         models_dir: config.models_dir.clone(),
         engine: config.engine.clone(),
         token: new_token(),
