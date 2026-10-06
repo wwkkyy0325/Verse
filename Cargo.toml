@@ -5,6 +5,7 @@ members = [
     "crates/verse-audio",
     "crates/verse-asr",
     "crates/verse-model",
+    "crates/verse-store",
     "crates/verse-pipeline",
     "crates/verse-cli",
     "crates/verse-app",
@@ -22,6 +23,7 @@ verse-core = { path = "crates/verse-core" }
 verse-audio = { path = "crates/verse-audio" }
 verse-asr = { path = "crates/verse-asr" }
 verse-model = { path = "crates/verse-model" }
+verse-store = { path = "crates/verse-store" }
 verse-pipeline = { path = "crates/verse-pipeline" }
 
 # Pinned deliberately: the native library archive is version-locked to this

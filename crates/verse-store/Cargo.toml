@@ -1,0 +1,36 @@
+[package]
+name = "verse-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Per-user directories, result cache and output naming for Verse"
+
+# Deliberately depends on no workspace crate. The command line has to resolve an
+# output path without linking the engine, and this crate holds no domain types:
+# the cache's wire format lives here, and the pipeline converts to and from its
+# own types at the boundary, the same arrangement `verse-cli/src/report.rs` and
+# `verse-app/src/bridge.rs` already use.
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+
+# `dirs` resolves the real Documents Known Folder on Windows, which stops being
+# `%USERPROFILE%\Documents` the moment OneDrive Known Folder Move is switched
+# on, and is XDG elsewhere. Hand-rolling that is wrong on every platform.
+#
+# `sha2` is used for exactly one thing: the cache key. That key is a
+# correctness boundary — a false hit returns the wrong transcript and there is
+# nothing downstream that could notice — so the digest must be
+# collision-resistant and stable across releases. `std` has no hash that
+# promises either (`DefaultHasher`'s algorithm is explicitly not a stable
+# interface), and writing one by hand is a second place to be wrong.
+#
+# Both are already in this workspace's build graph, sha2 through ureq and
+# `dirs` through Tauri, so these add manifest lines rather than crates.
+sha2 = "0.10"
+dirs = "7"
+
+[dev-dependencies]
+# Nothing: the tests build their own scratch trees.

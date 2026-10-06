@@ -37,7 +37,7 @@ that published only `TranscriptFinal` would render **"没有识别到内容"** w
 reporting success — the silent-failure class this project has been bitten by
 twice.
 
-## [ ] 1. `verse-store`: per-user directories, output naming
+## [x] 1. `verse-store`: per-user directories, output naming
 
 A new leaf crate. It owns "where data lives on this machine" and nothing else:
 directory resolution, the result cache, resume checkpoints, output naming.
@@ -59,6 +59,43 @@ prevented.
 for a serial suffix on a different source, and that a foreign file is never
 overwritten. A scratch-directory transcript showing `meeting.srt` then
 `meeting (2).srt`.
+
+**Done.** 25 tests. `cargo run -p verse-store --example naming` prints the run
+rather than asserting it — two recordings called `会议.m4a` from different
+months, written twice:
+
+```
+writing into an empty folder:
+  january   -> 会议.srt
+  february  -> 会议 (2).srt
+
+running both again, unchanged:
+  january   -> 会议.srt
+  february  -> 会议 (2).srt
+  folder now holds 2 files: ["会议 (2).srt", "会议.srt"]
+  january's text is still january's transcript
+
+a file that appeared without a record:
+  march     -> 手写 (2).srt
+  the hand-written file still says: typed by hand
+```
+
+Two runs leave two files, not four. The hand-written file is untouched and the
+new transcript goes beside it.
+
+**A bug found by review before it could ship.** The number on a reused filename
+is read back off the path — the record stays a plain map and cannot disagree
+with the filesystem about what a file is called. That parse stripped a trailing
+`)` from the *whole* filename, which ends in `.srt`, so it returned `None` for
+every numbered file: a re-run would have reported a file as unnumbered. Fixed
+by stripping the extension first, and the test that pins it was **checked to
+bite** — restored to the old expression it fails with `left: None, right:
+Some(2)`, rather than being assumed to.
+
+The dependency claim in the manifest was verified rather than asserted:
+`git diff Cargo.lock` adds exactly ten lines and the only new package is
+`verse-store` itself. `sha2` and `dirs` were already in the lock, so they add
+manifest lines and nothing to build.
 
 ## [ ] 2. `verse-store`: the result cache
 

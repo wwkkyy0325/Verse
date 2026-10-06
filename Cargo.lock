@@ -4147,6 +4147,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "verse-store"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "version-compare"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
