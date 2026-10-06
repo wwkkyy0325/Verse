@@ -1277,3 +1277,95 @@ the right thing, and the CLI's `--jobs N` loads one model per worker on purpose
 The window. Every path in the keeper is unit-tested, the wire is unchanged, and
 the measurement drives the same type the window holds — but "the second file no
 longer reloads" needs a person at the window.
+
+## 2026-10-07 — `verse serve`, and what a corrupt model does
+
+Asked whether the backend could be a component other applications use. It could
+not: a library plus two in-process consumers. The previous round built the
+prerequisite, `ModelKeeper`; this one builds the transport.
+
+**A subcommand of `verse`, for a structural reason.** `verse-cli` has no `[lib]`
+target, so `report.rs` — the pinned result wire and the contract tests that pin
+it — is unreachable from another crate. A separate binary would describe a
+transcript a third time. This way a job's result **is** the `FileResult` that
+`verse transcribe --json` emits, and `GET /models` is the `ModelList` that
+`verse model list --json` emits. One vocabulary, one parser.
+
+**The offline guarantee, amended rather than broken.** §4.5 said all network
+access lives in `verse-model`, and `verse-model/src/lib.rs` said it is the only
+crate permitted to perform network I/O. The distinction that keeps it intact:
+**an outbound connection is a request to a server; an inbound one is a request
+from a local peer.** The first is what "offline" forbids. A listener accepts and
+initiates nothing, adds no HTTP client, and is bound only while someone runs
+`serve`. The socket and every document restating the rule moved in one commit,
+and a grep confirms no restatement was missed.
+
+**Hand-rolled HTTP over `std::net` and `httparse`**, which was already in the
+graph through Tauri. Chunked encoding is refused rather than mis-parsed, bodies
+are capped at 1 MiB, connections at 64. No async anywhere, matching the rest of
+the tree.
+
+**Job-based**: submit, poll, cancel. A one-hour file takes minutes, so a
+synchronous call could show no progress and could not be stopped. One job runs
+at a time and the rest queue — a keeper is one model, and a pool is deferred with
+its cost named rather than taken by default.
+
+**Nothing grows with uptime**, which §3 makes a hard constraint for a
+long-running process and this is the first of. Measured over 45 jobs: `retained`
+pinned at 32 while uptime grew.
+
+### The finding that contradicts the plan
+
+The plan said a model present at the expected size but malformed would land as
+a failed job, showing the size-only check not failing silently. It does not. It
+**takes the process down**.
+
+Planted a decoy catalogue declaring sizes two files of garbage actually have, so
+`is_present` passes. `health` says present, the submit is accepted, sherpa-onnx
+prints `ReadTokens: Error: not tokens`, and the server is gone. The library
+terminates the process rather than returning an error — the command line exits
+127 on the same input, not one of its documented codes. There is no `Err` for
+`ModelKeeper` to announce, because there is no error to return.
+
+**Not new** — the command line has always had it. What is new is that the
+process is now a service other programs depend on, so the blast radius is a
+running server rather than a finished command. Not fixable under this project's
+rules: catching a C library's exit needs signal handling or `unsafe`, and
+running recognition in a subprocess would kill the keeper, which exists to hold
+the model in process. The common case — no model downloaded — is refused cleanly
+at submit.
+
+### Three languages, one wire
+
+The claim "usable from any language" is checked rather than asserted. The same
+job, from three:
+
+- **Python**, standard library only, `tools/verse-serve-client.py`;
+- **PowerShell**, `Invoke-RestMethod`, comparing the transcript by codepoint so
+  the console's encoding is not what is being tested — `text matches Python's:
+  True`;
+- **Rust**, an integration test spawning the real binary and driving a real
+  socket.
+
+All three return `开放时间早上9点至下午5点。` with one segment.
+
+### What running it found
+
+Four bugs, none visible to `cargo test`, clippy, or a careful reading.
+
+1. `submittedAtMs` was measured from the job's own start and `finishedAtMs` from
+   the worker's, so a job reported `submittedAtMs: 1604` and `finishedAtMs: 5`.
+   Three timestamps from three origins are not timestamps.
+2. My own documentation claimed `elapsedMs` was "recognition time only,
+   comparable with the CLI's report". It is — for every job except the one that
+   pays the model load: 1558 ms against 272 ms and 242 ms for the same clip.
+3. `serve --port 0` reported "unknown option 0", because the subcommand's
+   argument loop was missing the step past a value that every other parser here
+   ends with.
+4. Two tests of mine were racy, asserting on the queue length without first
+   pinning the worker.
+
+And one correction to a *test*: it opened 71 sockets expecting the connection cap
+to refuse some, and got none — TCP accepts a connection long before the server
+sees it, so the cap is only observable by sending a request. The refusal is a
+503 response, not a refused handshake.

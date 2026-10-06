@@ -224,13 +224,41 @@ loading it.
 Recorded rather than papered over. The common case — no model downloaded at all —
 is handled cleanly at submit, and that is the case a user meets.
 
-## [ ] 5. The "any language" proof, and the documents
+## [x] 5. The "any language" proof, and the documents
 
 `tools/verse-serve-client.py`; the task log; `design.md` §4.11; `README.md`;
 `llms.txt`; the changelog.
 
 **Verify:** the same job driven from **Python, PowerShell and Rust**, with the
 returned JSON pasted for each — three languages, one wire.
+
+**Done.** Three languages, the same transcript, and none of them using an SDK:
+
+| | |
+|---|---|
+| Python | stdlib `urllib` only — `tools/verse-serve-client.py` |
+| PowerShell | `Invoke-RestMethod`, **comparing by codepoint** so the console's encoding is not what is under test. Result: `text matches Python's: True` |
+| Rust | an integration test that spawns the real binary and drives a real socket |
+
+All three: `开放时间早上9点至下午5点。`, one segment.
+
+The PowerShell comparison is by codepoint on purpose. Printing the Chinese
+through a pipe renders as mojibake on this machine's cp936 console — which
+happened twice during this round and looks exactly like a bug in the service.
+It is not: over HTTP the bytes are the expected UTF-8, checked separately. Worth
+recording because the next person to see that output will believe it.
+
+Documents moved with the code: `design.md` §4.11, a note in `ui-design.md` §6.1
+that 17322 is the service port and not the dev server's 17321, a README section,
+and the routes in `llms.txt`.
+
+## What is not verified
+
+The window, which this round did not touch.
+
+**A corrupt model**, which is recorded rather than fixed: see step 4. The
+service can be ended by a malformed model file, and nothing under this project's
+rules can catch it.
 
 ---
 

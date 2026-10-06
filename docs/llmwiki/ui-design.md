@@ -324,7 +324,11 @@ Three things make this robust rather than merely tidy:
 - **`vite.config.ts` throws if it cannot find the field**, rather than
   defaulting to a port that happens to work.
 
-**Port 17321.** Chosen to be unremarkable and unused: above 1024 so it needs
+**Port 17321 is the dev server's.** `verse serve` uses **17322**, chosen by
+the same rules below and one above the dev server rather than on top of it
+(`design.md` §4.11). Both bind `127.0.0.1` explicitly, for the reason given.
+
+**Why 17321.** Chosen to be unremarkable and unused: above 1024 so it needs
 no privileges, below 49152 so it is outside the dynamic range Windows hands
 out, and not a default of Vite (5173), Tauri's own template (1420), React
 (3000), Vue (8080), or anything else likely to be running on a developer's

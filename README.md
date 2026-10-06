@@ -63,6 +63,36 @@ apart. Set `VERSE_OUTPUT` to put them somewhere else.
 | `--fail-fast` | stop at the first file that fails instead of finishing the batch |
 | `--no-cache` | transcribe again even though the result is already cached |
 
+## Use Verse from another program
+
+`verse serve` runs until you stop it and lets anything on this machine ask for a
+transcription over HTTP. It listens on `127.0.0.1` and initiates no connection,
+so it does not change what leaves your machine — see the note above.
+
+```console
+$ verse serve
+verse serve listening on http://127.0.0.1:17322
+  token and port: .../Verse/serve.json
+```
+
+It writes `serve.json` with the port and a token. Read them, then:
+
+```console
+$ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:17322/health
+$ curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"input": "C:/audio/meeting.m4a"}' http://127.0.0.1:17322/jobs
+{"version":1,"id":1,"state":"queued",...}
+$ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:17322/jobs/1
+```
+
+Poll until `state` is `done`, and then `result` is the same JSON that
+`verse transcribe --json` puts in `.results[0]`. `tools/verse-serve-client.py`
+is a worked example using the standard library alone — no SDK, no dependencies —
+and the same job runs unchanged from PowerShell's `Invoke-RestMethod`.
+
+One job runs at a time and the rest queue. `VERSE_MODEL_IDLE_SECS` says how long
+the model is kept after the last job; `0` keeps it for the process's life.
+
 ## For a program driving it
 
 Data on **stdout**, diagnostics on **stderr**, so this works:

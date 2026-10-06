@@ -32,12 +32,20 @@ impl Drop for Server {
 }
 
 fn start(name: &str) -> Server {
+    start_from(name, &std::env::current_dir().expect("a working directory"))
+}
+
+/// The same, from a chosen working directory — the service resolves `models`
+/// relative to where it is started, so the real-model test starts it at the
+/// workspace root.
+fn start_from(name: &str, cwd: &std::path::Path) -> Server {
     let dir = std::env::temp_dir().join(format!("verse-serve-test-{name}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create scratch dir");
 
     let child = Command::new(env!("CARGO_BIN_EXE_verse"))
         .args(["serve", "--port", "0"])
+        .current_dir(cwd)
         // Its own data directory, so the test cannot read or overwrite the one
         // belonging to whoever is running it.
         .env("VERSE_CACHE", &dir)
@@ -225,4 +233,69 @@ fn the_discovery_file_is_valid_json_with_everything_a_client_needs() {
     }
     assert_eq!(value["host"], serde_json::json!("127.0.0.1"));
     assert_eq!(value["token"].as_str().expect("token").len(), 64);
+}
+
+#[test]
+fn a_real_transcription_comes_back_through_the_service() {
+    // The third language. The command line is already Rust, but a transcript
+    // over a socket is a different claim from one over a pipe, and this is what
+    // makes "any language" three rather than one.
+    //
+    // Skipped when the weights are not in this checkout, the way the audio
+    // tests already do, so a bare machine still passes.
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..");
+    let clip = root.join("models").join("sensevoice").join("zh.wav");
+    let weights = root
+        .join("models")
+        .join("sensevoice")
+        .join("model.int8.onnx");
+    if !clip.is_file() || !weights.is_file() {
+        eprintln!("skipped: no sensevoice model in this checkout");
+        return;
+    }
+
+    // The service resolves `models` relative to where it is started, so it is
+    // started from the workspace root.
+    let server = start_from("transcribe", &root);
+
+    let spec = serde_json::json!({ "input": clip.display().to_string() }).to_string();
+    let request = format!(
+        "POST /jobs HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {}\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{spec}",
+        server.token,
+        spec.len()
+    );
+
+    let (status, body) = ask(server.port, &request);
+    assert!(status.contains("202"), "got: {status} {body}");
+    let job: serde_json::Value = serde_json::from_str(&body).expect("json");
+    let id = job["id"].as_u64().expect("an id");
+
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        let (_, body) = ask(
+            server.port,
+            &get(&format!("/jobs/{id}"), Some(&server.token)),
+        );
+        let job: serde_json::Value = serde_json::from_str(&body).expect("json");
+
+        match job["state"].as_str().expect("a state") {
+            "done" => {
+                assert_eq!(
+                    job["result"]["text"], "开放时间早上9点至下午5点。",
+                    "the transcript, over a socket"
+                );
+                assert_eq!(job["result"]["segmentCount"], serde_json::json!(1));
+                assert_eq!(job["result"]["ok"], serde_json::json!(true));
+                return;
+            }
+            "failed" | "cancelled" => panic!("job {id} ended as {}", job["state"]),
+            _ => {}
+        }
+
+        assert!(Instant::now() < deadline, "job {id} never finished");
+        std::thread::sleep(Duration::from_millis(200));
+    }
 }

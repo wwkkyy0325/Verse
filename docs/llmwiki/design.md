@@ -367,6 +367,64 @@ reason to release. And the CLI's `--jobs N` loads one model *per worker*
 deliberately — one keeper's single mutex would serialise the workers and turn
 `-j 4` back into `-j 1`.
 
+### 4.11 `verse serve`: the pipeline behind a loopback socket
+
+Other programs on this machine can ask Verse to transcribe a file. `verse serve`
+runs until killed, listening on `127.0.0.1` and only that, and §4.5 carries the
+argument for why a listener does not weaken the offline guarantee.
+
+**It is a subcommand of `verse`, and the reason is structural.** `verse-cli` has
+no `[lib]` target, so `report.rs` — the pinned result wire and the contract tests
+that pin it — is unreachable from another crate. A separate binary would have to
+describe a transcript a third time. This way a job's result **is** the
+`FileResult` that `verse transcribe --json` emits, and `GET /models` is the
+`ModelList` that `verse model list --json` emits.
+
+**Job-based, because a one-hour file takes minutes.** `POST /jobs` returns an id
+and `202`; `GET /jobs/{id}` reports state, progress and — once settled — the
+result; `DELETE /jobs/{id}` cancels. A synchronous call could show no progress
+and could not be stopped.
+
+**One job at a time, queued.** A keeper is one model, and the model is held for
+the whole of a transcription. A pool is the obvious next thing and is deferred
+with its cost named rather than taken by default: each worker is a resident
+model, 228 MB or about 982 MB, and `-j 4` on the command line already measured
+1245 MB peak on a machine this project requires to have 8 GB.
+
+**The HTTP is hand-rolled and the subset is deliberate.** `httparse` parses the
+request line and headers — already in the graph through Tauri, so a manifest
+line rather than a crate — and everything else is `std::net` and threads. No
+chunked encoding (a second framing to get wrong, and a loopback client knows its
+length), no HTTP/2, no upgrades, no ranges, no CORS. Requests are capped at
+8 KiB of request line, 16 KiB of headers and 1 MiB of body; connections at 64.
+
+**Nothing grows with uptime.** This is the first thing in the project that is a
+long-running process, which §3 makes a hard constraint for. Finished jobs are
+evicted FIFO at 32 — a result carries the whole transcript, the largest thing
+that accumulates. The queue is bounded at 32 and refuses with `429` rather than
+blocking. The bus is drained by exactly one thread, because its channels are
+unbounded and a subscriber that stopped reading would accumulate every event of
+every job. Measured: `retained` pins at 32 while uptime grows.
+
+**The token is a bearer token for a loopback listener, and worth being precise
+about.** It stops a **browser** — which cannot read the discovery file, and
+whose cross-origin requests are preflighted and never answered; a request
+carrying an `Origin` header is refused outright. It stops another **user** on the
+machine. It does **not** stop a process already running as this user, which can
+read the same file: the boundary there is the operating system's, not this
+string. And the API will transcribe any path that user can read.
+
+**A corrupt model takes the process down, and that cannot be fixed here.**
+`is_present` compares sizes, so a model present at the expected size but
+malformed passes every check, reaches the engine, and then **sherpa-onnx
+terminates the process** rather than returning an error — the command line exits
+127 on the same input, which is not one of its documented codes. There is no
+`Err` for `ModelKeeper` to announce, because there is no error to return.
+Catching it would need signal handling or `unsafe`, both excluded, and running
+recognition in a subprocess would kill the keeper. The common case — no model
+downloaded at all — is refused at submit with a message naming the command to
+run.
+
 ## 5. Engine and model selection
 
 ### 5.1 Why not Whisper
