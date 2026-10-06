@@ -16,4 +16,7 @@ pub mod vad;
 pub use convert::{transcode, TranscodeRequest};
 pub use decode::FfmpegDecoder;
 pub use ffmpeg::{is_available as ffmpeg_available, locate as locate_ffmpeg, FFMPEG_ENV};
-pub use vad::{SileroVad, DEFAULT_THRESHOLD};
+pub use vad::{
+    SileroVad, VadSettings, DEFAULT_MIN_SILENCE_SECONDS, DEFAULT_MIN_SPEECH_SECONDS,
+    DEFAULT_THRESHOLD,
+};

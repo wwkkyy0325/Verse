@@ -19,6 +19,17 @@ pub struct EngineConfig {
     ///
     /// Engines without such a mode ignore it.
     pub inverse_text_normalization: bool,
+    /// Longest output a generative engine may produce, in tokens.
+    ///
+    /// `None` leaves the engine's own default. Only generative decoders have
+    /// one: an encoder that emits a frame per frame has no notion of a budget
+    /// and ignores this.
+    ///
+    /// It matters because the far end of the range is a hard cut. A decoder
+    /// that runs out of budget stops mid-sentence and returns what it has,
+    /// with no error — so a transcript that is quietly missing its last third
+    /// looks exactly like one that finished.
+    pub max_output_tokens: Option<i32>,
 }
 
 /// Configuration handed to a source factory.

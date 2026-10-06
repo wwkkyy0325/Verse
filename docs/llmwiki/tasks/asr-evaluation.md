@@ -99,9 +99,10 @@ Full conversation set:
 | empty outputs | 17 | 1 |
 | punctuation F1 | 79.2% | 83.0% |
 
-## [ ] 5. Sentence boundaries
+## [x] 5. Sentence boundaries — the hypothesis was wrong
 
-The worst remaining cases are partial truncations, not missing utterances:
+The worst cases looked like partial truncations, and the obvious reading was
+that `min_silence_duration: 0.25` was splitting sentences:
 
 ```
 ref  逛集市喽，去逛集市喽。妈妈，你快点儿。
@@ -110,15 +111,72 @@ ref  妈妈，妈妈，快来，别淋湿啦！
 got  别淋湿啦。
 ```
 
-`min_silence_duration` is 0.25 s, and conversation is full of pauses shorter
-than that which still split a sentence. Raising it keeps sentences whole at
-the cost of coarser subtitle lines.
+Swept it, 300 utterances of conversation:
 
-**Verify:** sweep `min_silence_duration` across both datasets and report both
-CER and punctuation F1, since the two pull in opposite directions here. Make
-it settable the same way the threshold is.
+| min_silence | CER | exact | segments | chars/segment |
+|---|---|---|---|---|
+| 0.25 | 6.66% | 154 | 303 | 13.9 |
+| 0.60 | 6.61% | 154 | 301 | 14.0 |
+| 1.00 | 6.56% | 154 | 300 | 14.1 |
+| 1.50 | 6.56% | 154 | 300 | 14.1 |
 
-## [x] 6. A single average was hiding a factor of five
+**Nothing moves.** Three hundred utterances produce three hundred segments at
+every setting — one each. These files are one sentence long and the detector
+was never splitting anything. 13.9 characters per segment is not a symptom of
+over-cutting; it is the length of the reference sentences.
+
+The parameter is settable now and costs nothing to keep, but it was not the
+problem.
+
+**A plausible mechanism is not a diagnosis.** This is the third time in this
+work that reading the numbers was not enough, but the first time the
+mechanism I inferred from the failures was simply wrong.
+
+Why those sentences lose their second half is still unknown. The next step is
+one utterance traced through the pipeline — what spans come out, and what the
+recogniser is handed — rather than another parameter sweep.
+
+## [x] 6. The generation budget is not a bottleneck either
+
+Qwen3's decoder has a `max_new_tokens`, defaulting to 128, and upstream's own
+release notes mention adding a truncation warning. Our spans are capped at 20
+seconds, so the arithmetic looked close: 20 seconds of Chinese is 60–100
+characters, and the budget is in tokens.
+
+Swept on 200 utterances of conversation: **32, 64, 128, 256 and 512 give
+5.40% CER, 120 exact matches, 83.0% punctuation F1, and identical timings.**
+The parameter is wired correctly — set to 1 it emits `language`, the first
+token, and CER jumps to 101% — so the budget simply never binds.
+
+Tested again on 43 seconds of unbroken speech, ten utterances concatenated
+with no gaps: seven segments came out, averaging six seconds each. **The
+detector cuts at natural pauses well before the 20-second cap**, so spans
+never grow long enough to need a large budget.
+
+Kept at the upstream default. It has no measurable cost and nothing here
+argues for lowering it.
+
+## [x] 7. No GPU — and no runtime either
+
+Two questions with opposite answers.
+
+**No runtime is needed.** sherpa-onnx statically links onnxruntime into the
+archive it downloads, so the product is a single executable with nothing to
+install alongside it. That is what the "no cmake, no C++ toolchain" finding in
+`design.md` §7.2 has been buying all along.
+
+**No GPU is used.** The archive is `win-x64-static-MT-Release` — CPU only.
+sherpa-onnx publishes CUDA and DirectML builds, but they are a different
+archive, and the CUDA one carries a runtime dependency measured in hundreds
+of megabytes. For a tool whose premise is install-and-run, that is the wrong
+trade; the hardware probe and `engine_threads` are the CPU-side mitigation.
+
+Worth stating plainly because it is not obvious from outside: an LLM decoder
+sounds like something that wants a GPU, and this one does not use one. If it
+ever should, the change is an archive swap plus a probe rather than anything
+structural — `Registry` already selects engines at runtime.
+
+## [x] 8. A single average was hiding a factor of five
 
 Six datasets now, 300 utterances each. The result that matters is not any one
 number but the spread:
@@ -139,7 +197,7 @@ rest — which is exactly how 8.44% came to look like an answer.
 The tool now takes several manifests and prints this table, so the spread is
 the default view rather than something assembled by hand.
 
-## [x] 7. The wrong reference was being scored against
+## [x] 9. The wrong reference was being scored against
 
 The 37% was real but it was not measuring recognition. Reading the failures:
 
@@ -215,7 +273,7 @@ Two things the domain breakdown shows that a single figure could not:
   little pause to go on. Neither number predicts the other, which is the
   argument for measuring both.
 
-## [x] 7. Exclamation marks
+## [x] 10. Exclamation marks
 
 F1 is zero for SenseVoice: it never emits one. Seven occur in the sample, so
 the evidence is thin, but the direction is not ambiguous.
@@ -226,7 +284,7 @@ property of SenseVoice, not of the pipeline, and the pipeline is not dropping
 anything. Logged rather than acted on; a subtitle without exclamation marks
 loses tone, not content.
 
-## [x] 8. Punctuation as a stage, not a property of the engine
+## [x] 11. Punctuation as a stage, not a property of the engine
 
 `Request::punctuation_model` exists and the pipeline applies it per span.
 
@@ -240,7 +298,7 @@ The stage is now exercised — it is what made the Paraformer comparison fair �
 but **neither registered engine needs it**, which is worth knowing before
 someone assumes it is load-bearing.
 
-## [x] 9. Three engines, and one removed
+## [x] 12. Three engines, and one removed
 
 Same 200 utterances of conversation, then four more domains:
 

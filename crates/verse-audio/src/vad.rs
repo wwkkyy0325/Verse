@@ -61,13 +61,45 @@ const PAD_SECONDS: f32 = 0.4;
 pub const DEFAULT_THRESHOLD: f32 = 0.05;
 
 /// Silence long enough to end a span.
-const MIN_SILENCE_SECONDS: f32 = 0.25;
+///
+/// The subtlest of the three settings, because it trades two things that both
+/// matter against each other. Too short and a breath in the middle of a
+/// sentence splits it, costing the recogniser the context that resolves the
+/// second half. Too long and several sentences merge into one subtitle line,
+/// which is harder to read and worse to time.
+///
+/// See [`VadSettings`] for what was measured.
+pub const DEFAULT_MIN_SILENCE_SECONDS: f32 = 0.25;
 
 /// Speech shorter than this is discarded as a noise.
 ///
 /// Worth knowing when short utterances come back empty: a clipped 好 or 对
 /// can fall under it and disappear entirely.
-const MIN_SPEECH_SECONDS: f32 = 0.25;
+pub const DEFAULT_MIN_SPEECH_SECONDS: f32 = 0.25;
+
+/// How the detector decides where speech starts and stops.
+///
+/// A struct rather than a list of arguments, because there are three of them
+/// now and every one is a decision rather than a detail.
+#[derive(Debug, Clone, Copy)]
+pub struct VadSettings {
+    /// Where a frame counts as speech. See [`DEFAULT_THRESHOLD`].
+    pub threshold: f32,
+    /// Silence long enough to end a span.
+    pub min_silence_seconds: f32,
+    /// Speech shorter than this is discarded as noise.
+    pub min_speech_seconds: f32,
+}
+
+impl Default for VadSettings {
+    fn default() -> Self {
+        Self {
+            threshold: DEFAULT_THRESHOLD,
+            min_silence_seconds: DEFAULT_MIN_SILENCE_SECONDS,
+            min_speech_seconds: DEFAULT_MIN_SPEECH_SECONDS,
+        }
+    }
+}
 
 /// Silero VAD, presented as a [`Segmenter`].
 pub struct SileroVad {
@@ -87,7 +119,7 @@ pub struct SileroVad {
 impl SileroVad {
     /// Load the Silero VAD model and prepare to segment `format` audio.
     pub fn load(model: &Path, format: AudioFormat) -> Result<Self> {
-        Self::load_with(model, format, DEFAULT_THRESHOLD)
+        Self::load_with(model, format, VadSettings::default())
     }
 
     /// Load with an explicit speech threshold.
@@ -96,15 +128,18 @@ impl SileroVad {
     /// Too high and quiet or unusual speech is discarded before the recogniser
     /// ever sees it — which shows up not as a wrong transcript but as no
     /// transcript, the hardest kind of failure to notice from a sample.
-    pub fn load_with(model: &Path, format: AudioFormat, threshold: f32) -> Result<Self> {
+    pub fn load_with(model: &Path, format: AudioFormat, settings: VadSettings) -> Result<Self> {
         // Checked here rather than left to sherpa-onnx, which refuses the same
         // values but reports them as "failed to load VAD model" — sending
         // anyone who reads that message to inspect a model that is perfectly
         // fine. Its accepted floor is somewhere just above 0.01.
-        if !(0.02..=1.0).contains(&threshold) {
+        if !(0.02..=1.0).contains(&settings.threshold) {
             return Err(Error::new(
                 ErrorKind::Model,
-                format!("VAD threshold {threshold} is outside the usable range 0.02–1.0"),
+                format!(
+                    "VAD threshold {} is outside the usable range 0.02–1.0",
+                    settings.threshold
+                ),
             ));
         }
 
@@ -125,9 +160,9 @@ impl SileroVad {
         let config = VadModelConfig {
             silero_vad: SileroVadModelConfig {
                 model: Some(model_path.to_string()),
-                threshold,
-                min_silence_duration: MIN_SILENCE_SECONDS,
-                min_speech_duration: MIN_SPEECH_SECONDS,
+                threshold: settings.threshold,
+                min_silence_duration: settings.min_silence_seconds,
+                min_speech_duration: settings.min_speech_seconds,
                 // Silero v5 works on 512-sample windows at 16 kHz.
                 window_size: 512,
                 max_speech_duration: MAX_SPAN_SECONDS,

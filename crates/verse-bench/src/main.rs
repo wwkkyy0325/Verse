@@ -44,7 +44,10 @@ struct Options {
     limit: Option<usize>,
     dump: Option<PathBuf>,
     itn: bool,
-    vad_threshold: f32,
+    /// How the voice detector decides where speech starts and stops.
+    vad: verse_audio::VadSettings,
+    /// Longest output a generative engine may produce, in tokens.
+    max_output_tokens: Option<i32>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -60,9 +63,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         input: PathBuf::new(),
         models_dir: options.models.clone(),
         engine: options.engine.clone(),
-        vad: Request::vad_for(&options.models),
+        vad_model: Request::vad_for(&options.models),
         inverse_text_normalization: options.itn,
-        vad_threshold: options.vad_threshold,
+        vad: options.vad,
+        max_output_tokens: options.max_output_tokens,
     };
 
     eprintln!("loading {} ...", options.engine);
@@ -126,6 +130,7 @@ fn score_dataset(
     let mut results = Vec::with_capacity(utterances.len());
     let mut errors = 0usize;
     let mut characters = 0usize;
+    let mut segments = 0usize;
     let mut by_mark: BTreeMap<char, punct::MarkScore> = BTreeMap::new();
     let mut punctuation = punct::MarkScore::default();
 
@@ -144,6 +149,7 @@ fn score_dataset(
             }
         };
 
+        segments += transcript.segments.len();
         let hypothesis = transcript.to_text().replace('\n', "");
         let score = cer::score(&utterance.reference, &hypothesis);
 
@@ -187,6 +193,7 @@ fn score_dataset(
         punctuation,
         scored_punctuation,
         elapsed_seconds,
+        segments,
     })
 }
 
@@ -230,7 +237,8 @@ fn parse(args: Vec<String>) -> Result<Options, String> {
         limit: None,
         dump: None,
         itn: true,
-        vad_threshold: verse_audio::DEFAULT_THRESHOLD,
+        vad: verse_audio::VadSettings::default(),
+        max_output_tokens: None,
     };
 
     let mut i = 0;
@@ -249,9 +257,22 @@ fn parse(args: Vec<String>) -> Result<Options, String> {
             }
             "--vad-threshold" => {
                 let raw = take(&args, &mut i, "--vad-threshold")?;
-                options.vad_threshold = raw
+                options.vad.threshold = raw
                     .parse()
                     .map_err(|_| format!("--vad-threshold {raw} is not a number"))?;
+            }
+            "--max-tokens" => {
+                let raw = take(&args, &mut i, "--max-tokens")?;
+                options.max_output_tokens = Some(
+                    raw.parse()
+                        .map_err(|_| format!("--max-tokens {raw} is not a number"))?,
+                );
+            }
+            "--min-silence" => {
+                let raw = take(&args, &mut i, "--min-silence")?;
+                options.vad.min_silence_seconds = raw
+                    .parse()
+                    .map_err(|_| format!("--min-silence {raw} is not a number"))?;
             }
             other if other.starts_with('-') => return Err(format!("unknown option '{other}'")),
             other => options.manifests.push(PathBuf::from(other)),

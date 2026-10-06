@@ -24,13 +24,15 @@ pub struct Request {
     pub input: PathBuf,
     pub models_dir: PathBuf,
     pub engine: String,
-    pub vad: PathBuf,
+    pub vad_model: PathBuf,
     /// Whether the engine may rewrite written forms. See
     /// [`verse_core::EngineConfig::inverse_text_normalization`].
     pub inverse_text_normalization: bool,
-    /// Speech threshold for the voice detector. See
-    /// [`verse_audio::DEFAULT_THRESHOLD`] for why this is not simply fixed.
-    pub vad_threshold: f32,
+    /// How the voice detector decides where speech starts and stops.
+    pub vad: verse_audio::VadSettings,
+    /// Longest output a generative engine may produce. See
+    /// [`verse_core::EngineConfig::max_output_tokens`].
+    pub max_output_tokens: Option<i32>,
 }
 
 impl Request {
@@ -69,6 +71,7 @@ impl Transcriber {
                 model_dir: request.models_dir.join(&request.engine),
                 threads: hardware.engine_threads(),
                 inverse_text_normalization: request.inverse_text_normalization,
+                max_output_tokens: request.max_output_tokens,
             },
         )?;
 
@@ -138,7 +141,7 @@ impl Transcriber {
         let engine = self.engine.as_mut();
 
         let mut vad =
-            SileroVad::load_with(&request.vad, AudioFormat::TARGET, request.vad_threshold)?;
+            SileroVad::load_with(&request.vad_model, AudioFormat::TARGET, request.vad)?;
         let mut source = FfmpegDecoder::open(&request.input, AudioFormat::TARGET)?;
 
         let mut transcript = Transcript::default();

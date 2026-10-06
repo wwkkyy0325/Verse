@@ -271,13 +271,14 @@ pub fn start(app: &AppHandle, input: std::path::PathBuf, models_dir: std::path::
         };
 
         let request = Request {
-            vad: Request::vad_for(&models_dir),
+            vad_model: Request::vad_for(&models_dir),
             input,
             models_dir,
             engine,
             // The window shows what a person would write.
             inverse_text_normalization: true,
-            vad_threshold: verse_audio::DEFAULT_THRESHOLD,
+            vad: verse_audio::VadSettings::default(),
+            max_output_tokens: None,
         };
 
         // Loading is where a missing or unusable model shows up, and it

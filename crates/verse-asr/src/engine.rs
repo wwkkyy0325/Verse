@@ -100,6 +100,7 @@ impl OfflineEngine {
         decoder: &Path,
         tokenizer_dir: &Path,
         threads: usize,
+        max_output_tokens: Option<i32>,
     ) -> Result<Self> {
         for path in [conv_frontend, encoder, decoder] {
             if !path.is_file() {
@@ -123,6 +124,11 @@ impl OfflineEngine {
                     encoder: Some(path_string(encoder)?),
                     decoder: Some(path_string(decoder)?),
                     tokenizer: Some(path_string(tokenizer_dir)?),
+                    // The engine's own default when unset. `unwrap_or_default`
+                    // would be zero, which means "produce nothing" — a silent
+                    // failure that looks like a model that cannot recognise.
+                    max_new_tokens: max_output_tokens
+                        .unwrap_or(OfflineQwen3ASRModelConfig::default().max_new_tokens),
                     ..Default::default()
                 },
                 tokens: Some(String::new()),

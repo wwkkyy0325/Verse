@@ -179,6 +179,7 @@ fn transcribe(options: &TranscribeOptions) -> Result<(), Box<dyn std::error::Err
             model_dir,
             threads: hardware.engine_threads(),
             inverse_text_normalization: true,
+            max_output_tokens: None,
         },
     )?;
 

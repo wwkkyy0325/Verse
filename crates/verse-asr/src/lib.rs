@@ -34,6 +34,7 @@ pub fn register_builtin_engines(registry: &mut Registry) {
                 &cfg.model_dir.join("decoder.int8.onnx"),
                 &cfg.model_dir.join("tokenizer"),
                 cfg.threads,
+                cfg.max_output_tokens,
             )?;
             Ok(Box::new(engine) as Box<dyn verse_core::AsrEngine>)
         }),

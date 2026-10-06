@@ -44,9 +44,26 @@ pub struct Dataset {
     /// rather than as a question that dataset cannot answer.
     pub scored_punctuation: bool,
     pub elapsed_seconds: f64,
+    /// Total segments produced across the dataset.
+    ///
+    /// The subtitle unit. Two settings can score the same character error
+    /// rate while producing one long line and four readable ones, and only
+    /// this tells them apart.
+    pub segments: usize,
 }
 
 impl Dataset {
+    /// Mean characters per segment.
+    ///
+    /// Subtitle convention puts a comfortable line around 15-20 characters of
+    /// Chinese, and past roughly 25 a line stops being readable at a glance.
+    pub fn mean_segment_chars(&self) -> f64 {
+        if self.segments == 0 {
+            return 0.0;
+        }
+        self.characters as f64 / self.segments as f64
+    }
+
     pub fn rate(&self) -> f64 {
         if self.characters == 0 {
             0.0
@@ -64,10 +81,10 @@ impl Dataset {
 pub fn summary(datasets: &[Dataset]) {
     println!();
     println!(
-        "{:<22} {:>7} {:>8} {:>9} {:>10} {:>10}",
-        "dataset", "utter", "CER", "exact", "punct F1", "time"
+        "{:<20} {:>6} {:>8} {:>8} {:>9} {:>8} {:>7}",
+        "dataset", "utter", "CER", "exact", "punct F1", "chars/seg", "time"
     );
-    println!("{}", "-".repeat(70));
+    println!("{}", "-".repeat(72));
 
     for dataset in datasets {
         let punctuation = if dataset.scored_punctuation {
@@ -77,7 +94,7 @@ pub fn summary(datasets: &[Dataset]) {
         };
 
         println!(
-            "{:<22} {:>7} {:>8} {:>9} {:>10} {:>9.0}s",
+            "{:<20} {:>6} {:>8} {:>8} {:>9} {:>8.1} {:>6.0}s",
             dataset.name,
             dataset.results.len(),
             format!("{:.2}%", dataset.rate() * 100.0),
@@ -86,6 +103,7 @@ pub fn summary(datasets: &[Dataset]) {
                 100.0 * dataset.exact() as f64 / dataset.results.len().max(1) as f64
             ),
             punctuation,
+            dataset.mean_segment_chars(),
             dataset.elapsed_seconds,
         );
     }
@@ -100,6 +118,11 @@ pub fn detail(dataset: &Dataset, worst_shown: usize) {
     println!("errors          {}", dataset.errors);
     println!("CER             {:.2}%", dataset.rate() * 100.0);
     println!("wall time       {:.1}s", dataset.elapsed_seconds);
+    println!(
+        "segments        {} ({:.1} chars each)",
+        dataset.segments,
+        dataset.mean_segment_chars()
+    );
     println!(
         "exact matches   {} ({:.1}%)",
         dataset.exact(),
