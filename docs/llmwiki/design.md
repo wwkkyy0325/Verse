@@ -289,6 +289,67 @@ does not expose the detector's internal state — but skips the recognition,
 which is the dominant cost. If a span's identity does not match, it is
 recognised again. It is never approximated, and it is never fabricated.
 
+### 4.10 Model residency: `ModelKeeper`
+
+A model is the largest thing this program holds — 228 MB for the default, about
+a gigabyte for Qwen3 — and reading it takes longer than recognising a short
+utterance. `Transcriber` was built to be loaded once and used for many files;
+`ModelKeeper` is what owns it across those uses.
+
+**Why it exists, measured.** The window used to load a model *inside* every
+per-job worker thread, and the thread ended with the job. Five files of one
+short clip:
+
+| | per file | loads | total |
+|---|---|---|---|
+| load per file | 1549, 1501, 1711, 1512, 1547 ms | 5 | 7820 ms |
+| one keeper | 1564, **284, 306, 276, 309** ms | 1 | **2739 ms** |
+
+The shape is the point: loading per file is flat at 1.56 s however many files
+there are, while a keeper is `1564 + (N−1) × 290`. `cargo run -p verse-pipeline
+--example reuse` reproduces it, and validates its own instrument first.
+
+**Identity is the settings digest of §4.9.** Not a narrower "same engine" test,
+and the reason is correctness rather than tidiness: `Transcriber::run` reads the
+VAD and guard settings and the VAD model path out of the request it stored when
+it was loaded, so reusing across a change in any of those would run the *old*
+settings and produce a transcript for a configuration nobody asked for. A second
+identity function that drifted from the digest would cause exactly that, which
+is why there is one.
+
+The cost of that choice is that the digest over-covers: it includes settings
+that are not baked into the engine, so changing a detector threshold costs a
+reload. The window cannot hit this — it builds the same defaults on every job —
+and a service would pay one reload per change. Revisit with a number.
+
+**The model mutex is held for the whole job.** `Transcriber` is `Send` and not
+`Sync` (`AsrEngine: Send` and nothing more), so exclusive access is forced rather
+than chosen. It also gives the honest semantics: one model, one job. `release`
+therefore means "after the current job" and not "cancel" — a caller who wants to
+stop now has the job's `CancelToken`. `status` reads an atomic and never the
+lock, because the only time anyone asks is while a job is running.
+
+**No event.** `Event::ModelStateChanged` has been defined and unused since the
+first phase. Adding a second event that nothing subscribes to would repeat that;
+reusing the first would make `Ready` mean both "the file is on disk" and "the
+weights are resident", which is one word for two facts. `status()` is a query
+and answers the same question for the window and for whatever service comes
+next. When something needs to be *pushed*, that is the moment to decide what it
+should say.
+
+**A load failure announces its job before it announces the failure.** That order
+is load-bearing, not tidiness: a job id is claimed by `JobStarted`, and the
+window's screen discards output for an id it has not claimed. A failure arriving
+alone left the window on "正在准备…" with a cancel button for a job that was
+never running — reachable whenever a model is present at the expected size but
+unusable, since `is_present` checks size only.
+
+**The command line and the benchmark do not use it.** Both already load once and
+reuse through `set_input`; neither has a second caller, an idle state, or a
+reason to release. And the CLI's `--jobs N` loads one model *per worker*
+deliberately — one keeper's single mutex would serialise the workers and turn
+`-j 4` back into `-j 1`.
+
 ## 5. Engine and model selection
 
 ### 5.1 Why not Whisper

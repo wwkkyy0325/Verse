@@ -1183,3 +1183,97 @@ The models directory is the other loose end: `verse-store` now resolves a
 per-user data location and the cache, the checkpoints and the output record all
 use it, but the weights still resolve beside the executable. Recorded in
 `ui-design.md` §11 as a smaller and more concrete job than it was this morning.
+
+## 2026-10-07 — A process that owns a model
+
+Asked whether the backend was "a service" that could control a model's start and
+stop, and whether it could be given to other applications. It was not, and it
+could not: the backend is a library plus two in-process consumers, and **nothing
+in the tree held a model across jobs**.
+
+That last part was worse than an absence. The window loaded a 228 MB model
+*inside* every per-job worker thread, and the thread ended with the job —
+while `Transcriber`'s own doc comment says the opposite is the entire reason it
+is a struct rather than a function.
+
+### Measured first
+
+| 1-second clip | |
+|---|---|
+| recognition | 181 ms |
+| whole run | **1641 ms** |
+
+89% of the run was the load. Then, over five files:
+
+| | per file | loads | total |
+|---|---|---|---|
+| load per file — what the window did | 1549, 1501, 1711, 1512, 1547 ms | 5 | 7820 ms |
+| one keeper — what it does now | 1564, **284, 306, 276, 309** ms | 1 | **2739 ms** |
+
+The shape matters more than the total: loading per file is flat at 1.56 s
+however many files there are; a keeper is `1564 + (N−1) × 290`.
+
+### `ModelKeeper`
+
+A module in `verse-pipeline`, not a new crate — everything it needs is already
+there, and a crate would have added a manifest, a member and a dependency edge
+for no boundary. Three controls, which are the three things anyone asks of a
+long-lived resource: `preload` starts it, `release` stops it, `status` says what
+it is doing. Between those it releases itself once idle.
+
+**Identity is the settings digest**, and the reason is correctness rather than
+economy. `Transcriber::run` reads the VAD and guard settings and the VAD model
+path out of the request it stored when it was loaded, so a narrower "same
+engine" test would reuse across a change in those and run the *old* settings —
+a wrong answer, not a slow one. The cost is that the digest over-covers, so a
+changed detector threshold costs a reload; the window cannot hit that, and a
+service would pay one reload per change.
+
+**The model mutex is held for the whole job.** Forced rather than chosen —
+`Transcriber` is `Send` and not `Sync` — and it gives the honest semantics of one
+model doing one job. `release` therefore means "after the current job"; a caller
+who wants to stop now has the job's `CancelToken`. `status` reads an atomic and
+never the lock, because the only time anyone asks is while a job is running.
+
+### A dead end this round found and closed
+
+The window's own load failure was being discarded. `is_present` checks size
+only, so a model present at the expected size but unusable gave `ready = true`;
+the worker's `Transcriber::load` then failed and published `JobFailed` — with a
+job id **nobody had claimed**, because an id is claimed by `JobStarted` and
+`JobStarted` is published by `transcribe`, which is never reached. The screen's
+ownership guard discarded it, and the window sat on "正在准备…" for good, with a
+cancel button for a job that was never running.
+
+The comment at `lib.rs:128-130` even says a broken catalogue is fine because
+*"the pipeline will say so"*. It could not. The keeper announces `JobStarted`
+before `JobFailed`, and the dead end is gone.
+
+**A correction worth recording.** The plan claimed a particular test "fails
+today". It did not — it drove the fixed sequence and would pass either way, and
+the existing test could not catch the bug because its helper injects
+`JobStarted` itself. What pins it is a pair: the keeper's test that the sequence
+is `[JobStarted, JobFailed]`, and a new state test that a bare failure *is*
+discarded. The second asserts the guard's real behaviour and was checked to
+bite. Neither claims more than it shows.
+
+### No event, and no service
+
+`Event::ModelStateChanged` has been defined and unused since the first phase.
+Adding a second event that nothing subscribes to would repeat that; reusing the
+first would make `Ready` mean both "on disk" and "resident". `status()` is a
+query, and it is the accessor a service would call.
+
+**The loopback service is not built here.** The maintainer asked for model reuse
+first, deliberately, and this is that. `ModelKeeper::status()` and
+`with_timeout` are the two seams such a thing needs; they exist and are used.
+
+The command line and the benchmark still load for themselves. They already do
+the right thing, and the CLI's `--jobs N` loads one model per worker on purpose
+— one keeper's mutex would serialise them back into `-j 1`.
+
+### Still unverified
+
+The window. Every path in the keeper is unit-tested, the wire is unchanged, and
+the measurement drives the same type the window holds — but "the second file no
+longer reloads" needs a person at the window.

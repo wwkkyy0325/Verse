@@ -203,12 +203,34 @@ The shape matters more than the total: A is flat at 1.56 s per file however many
 there are, while B is `1564 + (N−1) × 290`. Ten files would be 15.6 s against
 4.2 s.
 
-## [ ] 5. Record
+## [x] 5. Record
 
 `design.md` §4.10, the changelog, and this log. Including the `ModelStateChanged`
 decision — no new event, because a second unused one repeats a mistake already
 written down twice, and reusing `ModelState` would make `Ready` mean both "on
 disk" and "in memory".
+
+**Done.** 277 tests, clippy clean.
+
+## What the next round inherits
+
+The loopback service is not designed here. Two seams exist for it:
+`ModelKeeper::status()` and `ModelKeeper::with_timeout`. Both are used by the
+window rather than built speculatively, and the keeper is `Send + Sync` — a
+compiled assertion, not a comment — so a service can hand it to whatever thread
+model it likes.
+
+One thing a service will have to decide and this round did not: **one keeper is
+one model is one job at a time.** Four concurrent requests would serialise. That
+is the honest behaviour for a gigabyte of weights and it is where the design
+starts, but a service wanting throughput needs a queue in front of it or a pool
+of keepers, and that is a decision with a memory cost that should be taken with
+numbers rather than by default.
+
+**Still unverified: the window.** Every path in the keeper is unit-tested, the
+wire format is unchanged, and the reuse measurement drives the same type the
+window holds — but "the second file no longer reloads" needs a person at the
+window. It is the same standing gap as `p1b-screens.md` step 4.
 
 ---
 
