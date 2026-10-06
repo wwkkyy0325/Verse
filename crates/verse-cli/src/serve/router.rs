@@ -167,10 +167,20 @@ fn submit(server: &Server, body: &[u8]) -> Response {
 
 /// Whether the model a job needs is on disk.
 ///
-/// **Size only**, which is what `is_present` does. A model present at the
-/// expected size but unusable passes this and is caught by the load inside the
-/// job — which is why the job reports it rather than the submit. Being clear
-/// about that here is the difference between a check and a guarantee.
+/// **Size only**, which is what `is_present` does, and the limit of that is
+/// worth stating because the consequence is worse than "a job fails late".
+///
+/// A model present at the expected size but corrupt passes this check, reaches
+/// the engine, and **takes the process down**: sherpa-onnx terminates on a
+/// malformed model rather than returning an error, so there is nothing for
+/// `ModelKeeper` to catch and announce. Measured with a decoy catalogue, on
+/// `serve` and on `verse transcribe` alike — the command line has always had
+/// this; what is new is that a running service can be ended by it.
+///
+/// Not fixable here: catching a C library's exit needs signal handling or
+/// `unsafe`, and running recognition in a subprocess would kill the keeper,
+/// which exists to hold the model in process. See
+/// `docs/llmwiki/tasks/local-service.md` step 4.
 fn model_present(server: &Server, engine: &str) -> bool {
     Catalog::load_or_embedded(&server.models_dir.join("catalog.json"))
         .ok()

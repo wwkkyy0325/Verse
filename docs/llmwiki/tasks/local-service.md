@@ -173,7 +173,7 @@ expected refusals, and got none: TCP accepts a connection long before the server
 sees it, so the cap can only be observed by *sending* something. The refusal is a
 response, not a refused handshake — worth knowing for anyone probing this.
 
-## [ ] 4. Models, and both no-model paths made visible
+## [x] 4. Models, and both no-model paths made visible
 
 `GET /models`; a submit-time refusal that names `verse model fetch`.
 
@@ -181,6 +181,48 @@ response, not a refused handshake — worth knowing for anyone probing this.
 declared size but unusable is *accepted* and lands `failed` with
 `kind: "model"` — the size-only check not failing silently; `GET /models` matches
 `verse model list --json` for the same directory.
+
+**Done, and the second half of that verification is wrong — in a way worth
+recording, because the plan assumed something the library does not do.**
+
+`GET /models` reuses `report::ModelList` and `ModelEntry`, the same structs
+`verse model list --json` builds, so the two cannot drift. With no model
+installed, `/health` reports `present: false`, a submit is refused `409` with
+`kind: "model"`, and the message names `verse model fetch sensevoice` — checked
+end to end.
+
+**But a model that is present and unusable does not land as a failed job. It
+takes the process down.** Planted a decoy: a catalogue declaring sizes that two
+files of garbage actually have, so the size-only check passes. Measured:
+
+```
+health says present: True      <- size only, and it matches
+submit accepted   : 202        <- the check cannot tell
+sherpa-onnx: symbol-table.cc:ReadTokens:132 Error: not tokens
+the server is gone
+```
+
+The library **terminates the process** rather than returning an error — the CLI
+exits 127 on the same input, which is not one of its documented codes. So the
+`Err` that `ModelKeeper` is built to announce never happens, and the design of
+step 2, "a load failure announces its job before announcing itself", does not
+apply to this case: there is no failure to announce.
+
+This is **not new** — the command line has always had it, and a corrupt model
+has always ended that process. What is new is that the process is now a service
+other programs depend on, so the blast radius is a running server rather than a
+finished command.
+
+It cannot be fixed under this project's rules. Catching a C library calling
+`exit` needs signal handling or `unsafe`, both of which are excluded; running
+each recognition in a subprocess would kill the keeper, which exists precisely
+to hold the model in-process. What can be done — and is not done here — is
+making `is_present` mean something stronger than a size, so a corrupt download is
+refused before anything loads it. That needs a way to validate a model without
+loading it.
+
+Recorded rather than papered over. The common case — no model downloaded at all —
+is handled cleanly at submit, and that is the case a user meets.
 
 ## [ ] 5. The "any language" proof, and the documents
 
