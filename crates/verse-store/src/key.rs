@@ -198,11 +198,7 @@ pub fn content_digest(path: &Path, verify: Verify) -> std::io::Result<String> {
 }
 
 /// Read `count` bytes into the hasher, stopping early at the end of the file.
-fn copy_into(
-    file: &mut std::fs::File,
-    hasher: &mut Sha256,
-    count: u64,
-) -> std::io::Result<()> {
+fn copy_into(file: &mut std::fs::File, hasher: &mut Sha256, count: u64) -> std::io::Result<()> {
     let mut remaining = count;
     let mut buffer = vec![0u8; 64 * 1024];
 
@@ -337,7 +333,11 @@ mod tests {
         let near: f32 = 0.05;
         let nearer: f32 = 0.050_000_1;
 
-        assert_ne!(near.to_bits(), nearer.to_bits(), "these really are two values");
+        assert_ne!(
+            near.to_bits(),
+            nearer.to_bits(),
+            "these really are two values"
+        );
         assert_eq!(
             format!("{near:.4}"),
             format!("{nearer:.4}"),
@@ -452,7 +452,10 @@ mod tests {
     fn the_semantics_constant_is_in_every_key() {
         // It is the only thing that can catch a change in the code that turns
         // inputs into output, which no model file or setting reflects.
-        assert_eq!(SEMANTICS, 1, "bumping this invalidates every entry; that is the point");
+        assert_eq!(
+            SEMANTICS, 1,
+            "bumping this invalidates every entry; that is the point"
+        );
         let mut fingerprint = Fingerprint::new();
         assert_eq!(fingerprint.digest(), Fingerprint::new().digest());
         fingerprint.add("engine", "sensevoice");

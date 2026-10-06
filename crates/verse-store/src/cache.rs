@@ -55,6 +55,16 @@ impl Cache {
         &self.root
     }
 
+    /// The per-user directory this cache sits under, which is where the other
+    /// files of Verse's own go — the resume logs, for one.
+    ///
+    /// `None` for a cache constructed with [`Cache::new`] at an arbitrary path,
+    /// which has no such directory. Callers that reached it through
+    /// [`Cache::under`] always get one.
+    pub fn data_dir(&self) -> Option<PathBuf> {
+        self.root.parent().map(Path::to_path_buf)
+    }
+
     fn entries_dir(&self) -> PathBuf {
         self.root.join(DIR_VERSION)
     }
@@ -333,8 +343,11 @@ mod tests {
 
         // Named as an entry, but with the temporary prefix.
         let temporary = entries.join(format!("{TEMPORARY}1234-0"));
-        std::fs::write(&temporary, serde_json::to_string(&an_entry("x")).expect("encode"))
-            .expect("plant");
+        std::fs::write(
+            &temporary,
+            serde_json::to_string(&an_entry("x")).expect("encode"),
+        )
+        .expect("plant");
 
         // Even asked for the key it appears to hold, it is not served.
         assert_eq!(cache.get("1234-0"), None);

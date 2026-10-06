@@ -38,10 +38,7 @@ fn main() {
                 ..Roots::default()
             },
         ),
-        (
-            "nothing at all",
-            Roots::default(),
-        ),
+        ("nothing at all", Roots::default()),
         (
             "VERSE_OUTPUT set",
             Roots {

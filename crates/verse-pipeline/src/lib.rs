@@ -150,8 +150,7 @@ impl Transcriber {
         // is not invariant under that. Recording the request rather than the
         // answer would let a cache carried between machines serve a result
         // computed differently.
-        let settings =
-            settings_digest(&request, threads, verse_audio::ffmpeg_version().as_deref());
+        let settings = settings_digest(&request, threads, verse_audio::ffmpeg_version().as_deref());
 
         Ok(Self {
             request,
@@ -266,7 +265,7 @@ impl Transcriber {
             AudioFormat::TARGET,
             self.request.vad,
         )?;
-        let (transcript, coverage) = self.sweep(&mut vad, job, bus, cancel)?;
+        let (transcript, coverage) = self.sweep(&mut vad, job, bus, cancel, "vad")?;
 
         if !self.request.guard.should_recover(&coverage) {
             return Ok(Transcription {
@@ -285,7 +284,7 @@ impl Transcriber {
         bus.publish(Event::TranscriptDiscarded { job });
 
         let mut whole = FixedBlocks::new(AudioFormat::TARGET);
-        let (transcript, _) = self.sweep(&mut whole, job, bus, cancel)?;
+        let (transcript, _) = self.sweep(&mut whole, job, bus, cancel, "whole")?;
 
         // The coverage reported is the first pass's: it is the reading that
         // explains why this file was treated differently, and the second
@@ -299,13 +298,21 @@ impl Transcriber {
     }
 
     /// One pass over the file with a given segmenter.
+    ///
+    /// `pass` names which segmenter this is, so the two passes a guarded run
+    /// can make never share a checkpoint: the detector's spans and the
+    /// whole-file fallback's have nothing to do with each other, and reusing
+    /// across them would splice two segmentations into one transcript.
     fn sweep(
         &mut self,
         segmenter: &mut dyn Segmenter,
         job: JobId,
         bus: &EventBus,
         cancel: &CancelToken,
+        pass: &str,
     ) -> Result<(Transcript, Coverage), Error> {
+        let mut progress = self.open_progress(pass);
+
         let request = &self.request;
         let engine = self.engine.as_mut();
 
@@ -320,7 +327,14 @@ impl Transcriber {
             segmenter.accept(&chunk)?;
             for span in segmenter.take() {
                 meter.kept(span.start, span.samples.len());
-                recognize(span, &mut *engine, &mut transcript, job, bus)?;
+                recognize(
+                    span,
+                    &mut *engine,
+                    &mut transcript,
+                    job,
+                    bus,
+                    progress.as_mut(),
+                )?;
             }
 
             bus.publish(Event::JobProgress {
@@ -335,10 +349,38 @@ impl Transcriber {
 
         for span in segmenter.finish() {
             meter.kept(span.start, span.samples.len());
-            recognize(span, &mut *engine, &mut transcript, job, bus)?;
+            recognize(
+                span,
+                &mut *engine,
+                &mut transcript,
+                job,
+                bus,
+                progress.as_mut(),
+            )?;
+        }
+
+        // Reached only by reading the whole file. A run that returns early —
+        // cancelled, or failed — leaves its log behind, which is the point of
+        // having one.
+        if let Some(progress) = progress.take() {
+            let _ = progress.forget();
         }
 
         Ok((transcript, meter.finish()))
+    }
+
+    /// A checkpoint log for one pass of this run, when there is anywhere to
+    /// keep one.
+    ///
+    /// Tied to the cache switch on purpose. `--no-cache` and `VERSE_NO_CACHE`
+    /// mean "do not reuse anything"; reading a resume log would be reusing.
+    fn open_progress(&self, pass: &str) -> Option<verse_store::Progress> {
+        let (cache, _) = self.request.cache.open()?;
+        let data = cache.data_dir()?;
+        // The same key the result cache uses, so a checkpoint can never be read
+        // by a run that would not have been allowed to read the result.
+        let (_, key) = self.cache_key()?;
+        Some(verse_store::Progress::open(&data, &key, pass))
     }
 }
 
@@ -378,11 +420,40 @@ fn recognize(
     out: &mut Transcript,
     job: JobId,
     bus: &EventBus,
+    progress: Option<&mut verse_store::Progress>,
 ) -> Result<(), Error> {
+    let key = progress
+        .as_ref()
+        .map(|_| verse_store::span_key(span.start, &span.samples));
+
+    // Already done — by this attempt, or by one that was interrupted before it
+    // finished. The text is replayed through the same events a fresh
+    // recognition would publish, so a resumed run cannot be told apart from an
+    // uninterrupted one by anything downstream.
+    if let (Some(progress), Some(key)) = (progress.as_ref(), key.as_ref()) {
+        if let Some(stored) = progress.remembered(key) {
+            for remembered in stored {
+                let segment = verse_core::Segment {
+                    id: SegmentId(out.segments.len() as u64),
+                    start: std::time::Duration::from(remembered.start),
+                    end: std::time::Duration::from(remembered.end),
+                    text: remembered.text.clone(),
+                };
+                bus.publish(Event::TranscriptSegment {
+                    job,
+                    segment: segment.clone(),
+                });
+                out.segments.push(segment);
+            }
+            return Ok(());
+        }
+    }
+
     engine.reset();
     engine.accept(&span)?;
     let piece = engine.finalize()?;
 
+    let mut produced: Vec<verse_store::SegmentDto> = Vec::new();
     for segment in piece.segments {
         // Each span's engine reports segment id 0; renumber so ids stay unique
         // across the whole transcript.
@@ -391,12 +462,25 @@ fn recognize(
             ..segment
         };
 
+        produced.push(verse_store::SegmentDto {
+            id: segment.id.0,
+            start: segment.start.into(),
+            end: segment.end.into(),
+            text: segment.text.clone(),
+        });
 
         bus.publish(Event::TranscriptSegment {
             job,
             segment: segment.clone(),
         });
         out.segments.push(segment);
+    }
+
+    // Best effort, and deliberately last. A checkpoint that cannot be written
+    // makes a future interruption more expensive and nothing else — the
+    // transcript in hand is already correct and already published.
+    if let (Some(progress), Some(key)) = (progress, key) {
+        let _ = progress.record(&key, &produced);
     }
 
     Ok(())
@@ -459,7 +543,10 @@ mod tests {
         announce(&bus, JobId(1), &a_transcription(&["开放时间", "上午九点"]));
         let seen = announced(&subscription);
 
-        assert_eq!(seen, ["segment:开放时间", "segment:上午九点", "final", "finished"]);
+        assert_eq!(
+            seen,
+            ["segment:开放时间", "segment:上午九点", "final", "finished"]
+        );
     }
 
     #[test]
@@ -519,5 +606,178 @@ mod tests {
             };
             assert_eq!(id, JobId(7));
         }
+    }
+
+    /// An engine that says a fixed thing, so a recognition can be run without
+    /// a model or 228 MB of weights.
+    struct Fixed(Option<Transcript>);
+
+    impl verse_core::AsrEngine for Fixed {
+        fn is_streaming(&self) -> bool {
+            false
+        }
+        fn accept(&mut self, _chunk: &AudioChunk) -> Result<(), Error> {
+            Ok(())
+        }
+        fn poll(&mut self) -> Result<Option<verse_core::TranscriptDelta>, Error> {
+            Ok(None)
+        }
+        fn finalize(&mut self) -> Result<Transcript, Error> {
+            Ok(self.0.take().unwrap_or_default())
+        }
+        fn reset(&mut self) {}
+    }
+
+    fn a_chunk(start_ms: u64, samples: usize) -> AudioChunk {
+        AudioChunk {
+            samples: vec![0.5; samples],
+            format: AudioFormat::TARGET,
+            start: Duration::from_millis(start_ms),
+        }
+    }
+
+    #[test]
+    fn recognising_a_span_records_it_for_a_later_attempt() {
+        // This is the test that was missing. The end-to-end run found the bug
+        // first: `recognize` collected the segments it had produced and then
+        // never stored them, so every checkpoint stayed empty and resume did
+        // nothing at all — while the code read as though it worked and clippy
+        // had nothing to say, because a Vec that is only pushed to counts as
+        // used.
+        let dir = std::env::temp_dir().join("verse-pipeline-test-record");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut progress = verse_store::Progress::open(&dir, "run", "vad");
+        let mut engine = Fixed(Some(Transcript {
+            segments: vec![Segment {
+                id: SegmentId(0),
+                start: Duration::from_millis(0),
+                end: Duration::from_millis(900),
+                text: "开放时间".to_string(),
+            }],
+            language: None,
+        }));
+        let mut out = Transcript::default();
+        let bus = EventBus::new();
+
+        let span = a_chunk(1_000, 16);
+        let key = verse_store::span_key(span.start, &span.samples);
+        recognize(span, &mut engine, &mut out, JobId(1), &bus, Some(&mut progress))
+            .expect("recognise");
+
+        assert_eq!(progress.len(), 1, "the span must have been recorded");
+        let stored = progress.remembered(&key).expect("recorded under its own key");
+        assert_eq!(stored[0].text, "开放时间");
+
+        // And it survives being reopened, which is the whole point: the log
+        // exists for the process that does not get to finish.
+        let again = verse_store::Progress::open(&dir, "run", "vad");
+        assert_eq!(again.remembered(&key).map(<[verse_store::SegmentDto]>::len), Some(1));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_second_attempt_reuses_the_span_without_asking_the_engine() {
+        // The engine is given nothing to say, so if the text still comes out
+        // it can only have come from the checkpoint.
+        let dir = std::env::temp_dir().join("verse-pipeline-test-reuse");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let span = a_chunk(2_000, 16);
+        let key = verse_store::span_key(span.start, &span.samples);
+
+        let mut first = verse_store::Progress::open(&dir, "run", "vad");
+        first
+            .record(
+                &key,
+                &[verse_store::SegmentDto {
+                    id: 0,
+                    start: Duration::from_millis(2_000).into(),
+                    end: Duration::from_millis(2_900).into(),
+                    text: "从检查点读出来的".to_string(),
+                }],
+            )
+            .expect("record");
+
+        let mut progress = verse_store::Progress::open(&dir, "run", "vad");
+        let mut engine = Fixed(None);
+        let mut out = Transcript::default();
+        let bus = EventBus::new();
+        let subscription = bus.subscribe_all();
+
+        recognize(
+            a_chunk(2_000, 16),
+            &mut engine,
+            &mut out,
+            JobId(1),
+            &bus,
+            Some(&mut progress),
+        )
+        .expect("recognise");
+
+        assert_eq!(out.segments.len(), 1);
+        assert_eq!(out.segments[0].text, "从检查点读出来的");
+        // Only the segment: `recognize` announces segments, and the final
+        // transcript is published by its caller once every span is done.
+        assert_eq!(
+            announced(&subscription),
+            ["segment:从检查点读出来的"],
+            "a reused span is announced exactly as a fresh one is"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_span_the_engine_has_never_seen_is_not_reused() {
+        // Different audio is a different span, whatever else matches.
+        let dir = std::env::temp_dir().join("verse-pipeline-test-noreuse");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let recorded = a_chunk(3_000, 16);
+        let key = verse_store::span_key(recorded.start, &recorded.samples);
+        let mut first = verse_store::Progress::open(&dir, "run", "vad");
+        first
+            .record(
+                &key,
+                &[verse_store::SegmentDto {
+                    id: 0,
+                    start: Duration::from_millis(3_000).into(),
+                    end: Duration::from_millis(3_900).into(),
+                    text: "the old audio".to_string(),
+                }],
+            )
+            .expect("record");
+
+        let mut progress = verse_store::Progress::open(&dir, "run", "vad");
+        let mut engine = Fixed(Some(Transcript {
+            segments: vec![Segment {
+                id: SegmentId(0),
+                start: Duration::from_millis(3_000),
+                end: Duration::from_millis(3_900),
+                text: "the new audio".to_string(),
+            }],
+            language: None,
+        }));
+        let mut out = Transcript::default();
+
+        // Same position and length, different samples.
+        let mut different = a_chunk(3_000, 16);
+        different.samples[0] = 0.25;
+
+        recognize(
+            different,
+            &mut engine,
+            &mut out,
+            JobId(1),
+            &EventBus::new(),
+            Some(&mut progress),
+        )
+        .expect("recognise");
+
+        assert_eq!(out.segments[0].text, "the new audio");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

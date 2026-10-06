@@ -190,7 +190,11 @@ mod tests {
     #[test]
     fn data_and_output_are_different_places() {
         // The cache must not land in a folder the user syncs or opens.
-        let r = roots(Some("/home/me/Documents"), Some("/home/me"), Some("/home/me/.local/share"));
+        let r = roots(
+            Some("/home/me/Documents"),
+            Some("/home/me"),
+            Some("/home/me/.local/share"),
+        );
         assert_eq!(output_dir(&r), PathBuf::from("/home/me/Documents/Verse"));
         assert_eq!(data_dir(&r), PathBuf::from("/home/me/.local/share/Verse"));
         assert!(!is_inside(&data_dir(&r), Path::new("/home/me/Documents")));

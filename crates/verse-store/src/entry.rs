@@ -92,11 +92,7 @@ pub struct Entry {
 }
 
 impl Entry {
-    pub fn new(
-        transcript: TranscriptDto,
-        coverage: CoverageDto,
-        recovered: bool,
-    ) -> Self {
+    pub fn new(transcript: TranscriptDto, coverage: CoverageDto, recovered: bool) -> Self {
         Self {
             version: ENTRY_VERSION,
             transcript,
@@ -122,12 +118,16 @@ mod tests {
         // timestamps were rounded would differ from a computed one.
         for duration in [
             Duration::new(0, 0),
-            Duration::new(1, 500_000),      // half a millisecond
+            Duration::new(1, 500_000), // half a millisecond
             Duration::new(12, 345_678_901),
             Duration::new(9_999, 999_999_999),
         ] {
             let span = Span::from(duration);
-            assert_eq!(Duration::from(span), duration, "{duration:?} did not survive");
+            assert_eq!(
+                Duration::from(span),
+                duration,
+                "{duration:?} did not survive"
+            );
         }
     }
 
@@ -190,7 +190,10 @@ mod tests {
             .map(String::as_str)
             .collect();
         assert_eq!(keys, ["coverage", "recovered", "transcript", "version"]);
-        assert!(value["transcript"]["language"].is_null(), "null, not absent");
+        assert!(
+            value["transcript"]["language"].is_null(),
+            "null, not absent"
+        );
     }
 
     #[test]

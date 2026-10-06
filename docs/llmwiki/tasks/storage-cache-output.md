@@ -199,7 +199,7 @@ a cached benchmark measures the cache, and comparing that against a real run
 would be the "two things that are not comparable" mistake this project has
 already paid for once.
 
-## [ ] 4. Resume checkpoints
+## [x] 4. Resume checkpoints
 
 Per-span identity: `(start, sample_count, sha256(span samples)) -> [segments]`.
 `recognize` already resets the engine per span (`lib.rs:274-302`), so spans are
@@ -216,6 +216,45 @@ digest does not match is simply recognised again.
 **Verify:** interrupt a long file mid-way and re-run; `diff` the resumed `.srt`
 against an uninterrupted one prints nothing. A digest mismatch must re-run ASR.
 Wall time recorded for both.
+
+**Done, and the end-to-end caught a bug that nothing else would have.**
+
+Measured on a 257-second file (the sample repeated 46 times), 27 spans:
+
+| run | spans reused | wall time | output |
+|---|---|---|---|
+| uninterrupted | 0 | 9.5 s | — |
+| killed at 4 s, then resumed | 11 of 27 | 7.6 s | identical |
+| killed at 7.5 s, then resumed | 20 of 27 | 4.6 s | identical |
+
+The checkpoint is written after each span and removed when the run completes.
+Both resumed outputs are `diff`-identical to the uninterrupted run, so the
+saving is time and nothing else.
+
+**The bug: `recognize` collected the segments it produced and never stored
+them.** The call that writes the checkpoint was missing, so every log stayed
+empty and resume did nothing — while the code read as though it worked. Clippy
+had nothing to say, because a `Vec` that is only pushed to counts as used, and
+the file *was* created, so even looking for it proved nothing. Only running an
+interrupted job and finding zero spans exposed it.
+
+Two tests now pin it: `recognising_a_span_records_it_for_a_later_attempt` and
+`a_second_attempt_reuses_the_span_without_asking_the_engine`, the second driving
+an engine that has nothing to say so the text can only have come from the log.
+**Both were checked to bite** — removing the record call again makes the first
+fail.
+
+**Two design points worth stating.** The resume log is tied to the cache
+switch: `--no-cache` and `VERSE_NO_CACHE` mean "reuse nothing", and reading a
+checkpoint is reusing. And the checkpoint is namespaced by pass, so the
+guard's whole-file second pass can never pick up the detector's first-pass
+spans — they are different segmentations and splicing them would produce a
+transcript that never existed.
+
+A span is identified by its own samples rather than by its position, so a
+segmenter that drifted by a few milliseconds between runs simply produces a
+miss and the span is recognised again. The failure mode is redoing work, never
+inventing it.
 
 ## [ ] 5. Model cleanup
 

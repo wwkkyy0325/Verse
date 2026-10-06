@@ -105,8 +105,7 @@ impl Ownership {
     }
 
     pub fn record(&mut self, source: &FileId, output: &Path) {
-        self.outputs
-            .insert(source.key(), output.to_path_buf());
+        self.outputs.insert(source.key(), output.to_path_buf());
     }
 
     /// Drop entries whose file has gone.
@@ -398,8 +397,14 @@ mod tests {
         ownership.save(&dir.join("outputs.json")).expect("save");
 
         let reloaded = Ownership::load(&dir.join("outputs.json"));
-        assert_eq!(reloaded.destination_of(&source), Some(choice.path.as_path()));
-        assert_eq!(reloaded.source_of(&choice.path), Some(source.key().as_str()));
+        assert_eq!(
+            reloaded.destination_of(&source),
+            Some(choice.path.as_path())
+        );
+        assert_eq!(
+            reloaded.source_of(&choice.path),
+            Some(source.key().as_str())
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -475,7 +480,11 @@ mod tests {
         // Reused from the record, and still known to be number 2.
         let again = destination(&out, "会议".as_ref(), "srt", &second_source, &ownership);
         assert_eq!(again.path, out.join("会议 (2).srt"));
-        assert_eq!(again.serial, Some(2), "the number must survive the round trip");
+        assert_eq!(
+            again.serial,
+            Some(2),
+            "the number must survive the round trip"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
