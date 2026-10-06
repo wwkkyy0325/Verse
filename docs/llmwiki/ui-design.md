@@ -438,3 +438,17 @@ Stated so they do not creep in:
    must not hardcode a path that packaging will change. (Raised while writing
    §6.1: the same question applies to the dev-server address, which is why
    that one has a single source.)
+
+   **Half answered, 2026-10-06.** The *mechanism* now exists: `verse-store`
+   resolves a per-user data directory (`VERSE_CACHE` → `%LOCALAPPDATA%\Verse` →
+   `~/.verse`) and the result cache, the resume logs and the output record all
+   live under it. Models do not: they still resolve beside the executable, via
+   `VERSE_MODELS` and then `current_exe()`. So the question has gone from "we
+   have nowhere to put per-user files" to "the models are the one thing not
+   using the place that exists", which is a smaller and more concrete job — a
+   single resolution function, and a migration for anyone who already has
+   weights in the old location.
+
+   Worth doing before packaging, and not before: moving 1.2 GB of models on an
+   existing install is a real cost to impose for a tidiness that only matters
+   once there is an installer.

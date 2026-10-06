@@ -1096,3 +1096,90 @@ The work is staged in `tasks/storage-cache-output.md`. Step 6 is a **breaking
 change** — the CLI's default output directory moves — and the published
 contracts (`llms.txt`, `README.md`, the usage text, the existing tests) move in
 the same commit rather than after it.
+
+## 2026-10-06 — The main line: where results go, and not doing work twice
+
+The round this file has been building towards since the audit at the top of the
+day. Four things were asked for and one was cut; the plan is
+`tasks/storage-cache-output.md` and every step is done.
+
+**A result cache.** A new leaf crate, `verse-store`, keys a finished
+transcription by the audio it came from and the settings that produced it. A
+re-run is instant. Measured: `elapsedMs` 307 → 0, output byte-identical, and a
+one-byte change to the file with the length left alone correctly misses.
+
+The hook is inside `Transcriber::transcribe`, which the command line, the
+window and the harness all pass through. That placement is the design: a hit
+republishes **every** segment through the same events a run would, because the
+window builds its list from `TranscriptSegment` and `TranscriptFinal` only
+finalises. A hit publishing the final transcript alone would have shown an
+empty result and called it success.
+
+**Resume.** A long file interrupted at 11 of 27 spans resumed in 7.6 s against
+9.5 s; at 20 of 27, 4.6 s. Both outputs identical. Only the recognition is
+skipped — the decode and the segmentation are redone, because the detector's
+state is not exposed — and a span is identified by its own samples, so the
+failure mode is redoing work rather than inventing it.
+
+**Model and cache cleanup.** `verse model list` reports two sizes, one of them
+"how much of this is a transfer that never landed". `remove` and `clean` and
+`cache size` and `cache clean` come with it. Nothing runs on its own: a model
+directory is the largest thing this program puts on a disk, and deleting one on
+a heuristic is a destructive act taken on someone's behalf.
+
+**Automatic saving.** Transcripts now go to a `Verse` folder in the user's
+Documents on both interfaces. In the window it happens the moment the result
+exists, so dropping a two-hour recording and then another one no longer
+destroys the first. The CLI's default changed with it — a breaking change, and
+`llms.txt`, `README.md` and the usage text moved in the same commit rather than
+after it.
+
+**A decoded-PCM cache was cut**, with the reasoning in `design.md` §4.1 so it
+is not re-proposed as a new idea: the result cache already answers the common
+case, and PCM on disk only pays when the same audio goes through a different
+engine, which is evaluation work and is what `verse-bench` is for.
+
+### What running it found that reading it did not
+
+Five bugs, none visible to `cargo test`, clippy, or a careful reading of the
+diff. They are the argument for the rule this project already had.
+
+1. **`recognize` collected the segments it produced and never stored them.**
+   The checkpoint call was simply missing, so every log stayed empty and resume
+   did nothing while the code read as though it worked. Clippy had nothing to
+   say: a `Vec` that is only pushed to counts as used.
+
+2. **The ownership record was loaded, used and never saved**, so every run
+   looked like a first run and the output directory filled with `zh.srt`,
+   `zh (2).srt`, `zh (3).srt`.
+
+3. **Pruning the record before saving erased the claims just made**, because
+   none of those transcripts had been written yet. Pruning now happens on the
+   way in, never on the way out.
+
+4. **`is_free` asked the filesystem whether a name was taken**, and during
+   planning nothing is on disk yet — so two inputs in one batch were both
+   handed `会议.srt`. The record is consulted first now.
+
+5. **`rename_all` on an enum renames its variants, not their fields.** The new
+   `saveError` arrived as `save_error`; checking the neighbours found the same
+   mistake in `DownloadView::Fetching`, which has been there since the download
+   screen was built two rounds ago — the progress bar has been reading a field
+   that was never sent and showing **"NaN MB"** at zero per cent ever since.
+   Neither side complained because nothing connects them but a comment.
+
+Each now has a test, and each of those tests was checked to bite by putting the
+bug back.
+
+### What is still not verified
+
+The window. Every path in `autosave` is unit-tested, the wire format is pinned,
+the frontend type-checks and builds — but "the transcript appeared in Documents
+and the error shows when it does not" needs a person at the window. That is
+step 4 of `p1b-screens.md`, and it is now also the last thing standing between
+this round and being finished rather than merely correct.
+
+The models directory is the other loose end: `verse-store` now resolves a
+per-user data location and the cache, the checkpoints and the output record all
+use it, but the weights still resolve beside the executable. Recorded in
+`ui-design.md` §11 as a smaller and more concrete job than it was this morning.

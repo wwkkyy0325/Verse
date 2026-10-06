@@ -415,7 +415,7 @@ type-checks and builds — but "the transcript appeared in Documents and the
 error is visible when it does not" needs a person at the window, and that is
 still step 4 of `p1b-screens.md` as much as it is this one.
 
-## [ ] 8. Consolidation
+## [x] 8. Consolidation
 
 `design.md`, this log (all steps `[x]` with their evidence), `changelog.md`,
 `llms.txt`, `README.md`. Every flag named in the docs checked against
@@ -424,6 +424,20 @@ still step 4 of `p1b-screens.md` as much as it is this one.
 **Verify:** `cargo test --workspace` and
 `cargo clippy --workspace --all-targets` both clean, and the old
 default-output sentence gone from every doc.
+
+**Done.** 263 tests, clippy clean, the frontend builds and type-checks.
+
+Every flag named in `llms.txt` was checked against `verse transcribe --help`
+rather than assumed: eleven of them, all present. Every command named there was
+run, all seven.
+
+`ui-design.md` §11's open question about where the model directory lives is now
+**half answered** and says so: `verse-store` resolves a per-user data directory
+and the cache, the checkpoints and the output record all use it, but the weights
+still resolve beside the executable. That is a smaller job than it was this
+morning — one resolution function and a migration — and it is deliberately not
+done here, because moving 1.2 GB of models on an existing install is a real
+cost to impose for a tidiness that only matters once there is an installer.
 
 ---
 
