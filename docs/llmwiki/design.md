@@ -536,7 +536,7 @@ Absent AVX2 means: fall back to the SSE kernel and restrict the model tier to sm
 |-------|-------------|--------------|
 | **P0** | Framework: workspace, domain types, event bus, registry, router, pipeline trait | Unit tests: events reach subscribers by filter; registry resolves a registered factory; a stub pipeline runs a job to completion while emitting progress and honoring cancellation |
 | **P1a** | core + CLI + model fetcher | `verse model fetch` retrieves a model via failover; `verse transcribe a.mp3 -o a.srt` produces correct subtitles |
-| P1b | slint GUI shell | Drag file → progress → result → export, no terminal involved |
+| P1b | desktop window (Tauri + Svelte; this said "slint" until it was corrected) | Drag file → progress → result → export, no terminal involved |
 | P2a | Loopback capture + streaming subtitles | Play a video on Windows; floating window shows text live |
 | P2b | Translation | Bilingual zh/en subtitles |
 
@@ -546,9 +546,9 @@ P1a is where the risk lives: the model fetcher under real Chinese network condit
 
 | Risk | Impact | Mitigation |
 |------|--------|-----------|
-| SenseVoice license contradiction | Cannot ship as default | Default to Paraformer-large; resolve before promoting SenseVoice |
+| SenseVoice license is custom, not Apache-2.0 | Attribution and name-retention obligations on a distributed build | **SenseVoice is the default.** This row said "default to Paraformer-large" and was overtaken: Paraformer was removed for being beaten on three axes out of four, so there is no fallback engine to default to. The obligations are real and listed in `THIRD_PARTY_NOTICES.md`; the licence text still has to be shipped. |
 | Third-party ModelScope upload | Supply-chain integrity | SHA-256 pinning; prefer hf-mirror for that model if hashes cannot be trusted |
-| Punctuation model not yet selected | Unreadable SRT | P1a task; blocking for the phase exit criterion |
+| ~~Punctuation model not yet selected~~ | — | **Moot.** Both engines punctuate internally and the model was removed; see §5.4. |
 | GitHub prefix proxies are third-party | Build/fetch failures | Configure two; document manual pre-staging |
 | sherpa-onnx archive filename is version-locked | Breaks on every crate bump | Pin the crate version; record the archive name |
 | No single stable China model host | Download failures | 4-layer fallback including mandatory manual import |

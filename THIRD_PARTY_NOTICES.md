@@ -93,10 +93,14 @@ installer rather than failing at launch.
 
 Upstream: <https://learn.microsoft.com/microsoft-edge/webview2/>
 
-### Paraformer-large — model weights
+### Paraformer-large — model weights (no longer used)
 
-**Apache-2.0.** The cleanest license of the bunch, which is why it remains the
-fallback engine.
+**Apache-2.0**, and the cleanest license of the bunch. It was the fallback
+engine until it was removed: measured across five domains it won 0.6–3.1 points
+of character accuracy and lost 1–8 points of punctuation while taking 2.3× as
+long, so keeping a third option cost more than it returned. Nothing here ships
+these weights any more; the section is kept because the licence comparison is
+still the reason the choice was worth measuring.
 
 ---
 

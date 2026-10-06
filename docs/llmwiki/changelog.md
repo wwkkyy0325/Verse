@@ -762,3 +762,93 @@ and the guard now reports itself when it fires.
 `verse-asr` moved to the CLI's dev-dependencies: only the `transcribe` example
 still reaches an engine directly, deliberately skipping the detector to
 separate a recogniser that failed from one that was never given the audio.
+
+## 2026-10-06 — The CLI learns to be driven by a program
+
+Verse was usable by a person through the window and by a person through the
+terminal, and not by an agent, for three reasons that reading the code made
+concrete: one file per invocation, nothing machine-readable, and a single exit
+code where `ErrorKind` distinguishes nine.
+
+### The Qwen decision rested on a bug
+
+The choice not to bundle Qwen3 is only sound if fetching it works. **It did
+not.** `Downloader::fetch` created `models/<id>/` and nothing else, while three
+of Qwen3's six entries name a subdirectory — `tokenizer/vocab.json` and
+friends. On a machine where that directory did not already exist,
+`verse model fetch qwen3-asr` would have pulled 982 MB and then failed on the
+last three files. It never bit here because the tokenizer had been unpacked by
+hand into this checkout.
+
+Reproduced first, with a catalogue override pointing at the 2.3 MB VAD file so
+the test cost seconds rather than a gigabyte: `os error 3`, nothing written.
+Fixed by creating the file's parent before the transfer starts rather than
+beside the write, so a layout that cannot be created fails immediately instead
+of after the download.
+
+Every configured mirror was also probed. **`silero-vad`'s hf-mirror entry is
+dead** — 404 — and is harmless only because modelscope is listed first.
+
+### Batch, and what it is worth
+
+One invocation now takes files and directories, loads the model once, and keeps
+going when a file fails. On twenty files: **7.3 s against 33.3 s**, because the
+second way pays a 228 MB model load twenty times. A corrupt file among eight
+leaves the other seven written and exits 3.
+
+`--jobs N` is opt-in and on the evidence: **21 s and 347 MB at 1, 10 s and
+1245 MB at 4** over sixty files. 2.1× for 3.6× the memory, sublinear because
+the workers contend for the same cores, and kept because the memory is not much
+on a machine this project already requires 8 GB of. Output verified identical
+to the sequential run across all sixty files.
+
+### Machine-readable, and honest about it
+
+`--json` puts one document on stdout and nothing else there. **One shape for
+one file and for many**, so a caller never branches on arity. Every field is
+always present, `null` rather than absent. `coverage` and `recovered` travel
+with each result, because a transcript that is short because the recording was
+short and one that is short because audio was dropped are otherwise identical.
+
+Exit codes now separate the failures that call for different actions. 4 means
+"no model — run `verse model fetch`", which is the one an agent can act on.
+
+### `hotwords`, and the intelligence claim
+
+The user asked whether bundling Qwen would add intelligence. It would not —
+Qwen3 is a bigger transcription model, not a reasoning one. What it *does* have
+that SenseVoice does not is `hotwords`: a lexicon fed to the decoder, which
+changes what is heard rather than how it is written.
+
+Demonstrated rather than asserted. `000030`, reference `该本王子用那个球拍了。`:
+
+```text
+without --hotwords        本王不用那个酒吧啦。
+with    --hotwords 球拍   本王不用那个球拍啦。
+```
+
+A second clip, 球拍's sibling: `滑得` corrected from `划的`. The delimiter is
+undocumented in the binding, so it was determined by trying — comma, full-width
+comma, space and newline all work — and the CLI passes the string through
+unchanged rather than normalising a grammar it did not define.
+
+`--hotwords` with an engine that cannot use it warns and records itself in the
+report, with `hotwords` set to `null`. Not a hard error, because a batch across
+mixed engines should not lose the run to an inapplicable flag; not silence
+either, because that is the failure this project has now paid for three times.
+
+### Documentation, and five things that were not true
+
+`README.md`, `llms.txt` and `AGENTS.md`, none of which existed. Before writing
+them, five stale passages were corrected — the worst being `design.md` §10
+instructing a default engine that was removed, contradicting §5.3 of the same
+document, and a task log still claiming Paraformer as the fallback.
+
+Every flag named in the new documents was checked against `verse transcribe
+--help`, which also revealed that `verse transcribe --help` was itself an
+error. Fixed.
+
+**On "increasing AI search ranking": that cannot be promised and nothing here
+claims it.** What was built is legibility to an AI that has already found the
+project. Whether a crawler ranks it well is not something this repository
+decides.

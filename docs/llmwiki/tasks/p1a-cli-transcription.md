@@ -61,9 +61,12 @@ One thing had to be established rather than assumed: the detector reports span o
 
 Not yet verified: the 30-minute file and flat-RSS check from the original plan. That needs a long recording; it belongs with step 10, where a real end-to-end run happens anyway.
 
-## [ ] 7. AsrEngine trait and Paraformer backend
+## [x] 7. AsrEngine trait and an offline backend
 
-Implement the trait from `design.md` §4.2 plus the offline Paraformer implementation. Timestamps must survive.
+Implemented from `design.md` §4.2, with Paraformer as the first backend — which
+was later removed (see `asr-evaluation.md` §12) and replaced by SenseVoice and
+Qwen3-ASR. The trait itself is what this step was for, and it is what made
+swapping the backend a registry change rather than a rewrite.
 
 **Verify:** unit test transcribes a short Chinese clip and produces the expected text with monotonic timestamps.
 

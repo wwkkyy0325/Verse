@@ -1,0 +1,98 @@
+# Verse
+
+> Offline Chinese speech-to-text for Windows, in Rust. A command-line tool and
+> a desktop window over the same pipeline. Transcription runs locally with
+> sherpa-onnx; nothing is uploaded, and the only network access in the program
+> is `verse model fetch`.
+
+Verse is designed to be driven by a program as well as by a person. Every
+command takes `--json`; results go to stdout and diagnostics to stderr; failures
+return distinct exit codes rather than a single non-zero.
+
+## Commands
+
+    verse transcribe <file|dir>... [options]
+    verse model list [--json] [--models <dir>]
+    verse model fetch <id> [--models <dir>]
+
+A directory argument expands to the audio files beneath it, recursively,
+sorted. One model is loaded for the whole batch — about 50× faster on a hundred
+files than one process per file.
+
+### transcribe options
+
+    -o, --output <path>    output file, or directory when there are several inputs
+        --format <srt|txt> srt (default) or txt
+        --engine <id>      sensevoice (default) or qwen3-asr
+        --models <dir>     model root, default `models`
+        --vad <file>       voice-detector model
+        --hotwords <terms> domain vocabulary; qwen3-asr only
+        --hotwords-file <f> the same, read from a file
+    -j, --jobs <n>         files at once, default 1; each worker loads its own model
+        --json             one JSON document on stdout
+        --fail-fast        stop at the first file that fails
+    -o -                   write a single transcript to stdout
+
+## Output contract
+
+`--json` writes exactly one JSON document to stdout. Everything human-readable,
+including progress and error messages, goes to stderr. Both single files and
+batches produce the same shape, so a caller never branches on arity:
+
+    {"version": 1, "engine": "sensevoice", "modelsDir": "models",
+     "hotwords": null, "ok": true, "succeeded": 1, "failed": 0,
+     "elapsedMs": 597, "warnings": [],
+     "results": [{"input": "...", "output": "...", "format": "srt", "ok": true,
+                  "elapsedMs": 597, "segmentCount": 1, "coverage": 0.998,
+                  "recovered": false, "language": null, "text": "...",
+                  "warnings": [], "segments": [{"startMs": 0, "endMs": 1500,
+                  "text": "..."}], "error": null}]}
+
+Every field is always present; `null` rather than absent. `version` describes
+the document, not the tool. Timestamps are milliseconds; keys are camelCase.
+
+`coverage` is the fraction of a file's non-silent audio that reached the
+recogniser, and `recovered` is true when that fraction was implausible and the
+file was recognised whole instead. **These two are how a caller judges whether
+a transcript can be trusted**: a transcript that is short because the recording
+was short and one that is short because audio was dropped are otherwise
+identical.
+
+`error.kind` is one of `io`, `network`, `decode`, `model`, `engine`, `sink`,
+`registry`, `cancelled`, `internal` — the same vocabulary as the exit codes.
+
+## Exit codes
+
+    0  transcribed                 5  the recognition engine failed
+    1  a bug                6  network
+    2  the command line was wrong  7  cancelled
+    3  the input was unreadable    8  the output could not be written
+       or undecodable
+    4  no usable model — run `verse model fetch <id>`
+
+## Engines
+
+| id | model | size | notes |
+|---|---|---|---|
+| `sensevoice` | SenseVoice-Small int8 | 228 MB | default; fastest, smallest, best punctuation |
+| `qwen3-asr` | Qwen3-ASR-0.6B int8 | 982 MB | most accurate on every domain measured; ~4× slower; the only one that takes `--hotwords` |
+
+`--hotwords` gives a domain vocabulary, so a term is not substituted for a
+homophone. It is passed through to sherpa-onnx unchanged; comma, full-width
+comma, space and newline all delimit. Supplying it with an engine that cannot
+use it warns on stderr and sets `hotwords` to `null` in the report — it never
+passes silently.
+
+Measured character error rate over 5049 utterances in five domains:
+conversation 4.80%, meeting 6.95%, documentary 7.16%, phone call 8.42%, live
+commerce 11.30%. Do not quote a single figure for this recogniser; the spread
+is the finding.
+
+## Optional
+
+- [README.md](README.md): install, use, the full output contract
+- [docs/llmwiki/design.md](docs/llmwiki/design.md): architecture and the
+  decisions behind it
+- [docs/llmwiki/tasks/asr-evaluation.md](docs/llmwiki/tasks/asr-evaluation.md):
+  how the accuracy figures were measured, and which of them were wrong first
+- [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md): model and library licences
