@@ -1447,3 +1447,47 @@ per-worker cost at 306.6 MB and predicted six workers from a 64 MiB overhead.
 The measurement said 322 MB marginal, so the overhead is ~82 MB and the constant
 is now 80 MiB. The prediction and the measurement agreed on six only by
 coincidence; they agree by construction now.
+
+## 2026-10-07 — The pool's budget becomes a measurement
+
+The maintainer asked whether the memory budget could be read from the machine
+rather than assumed. It could, and the assumption was the worse of the two.
+
+The budget was a constant — a quarter of the 8 GB floor §3 requires — which gave
+a machine with 31 GiB the same pool as one with 8. Worse, it came out roughly the
+size of a **single Qwen3 worker**, so the budget was most binding on the model
+that benefits most from a pool. On this machine: **SenseVoice 6 → 8, Qwen3-ASR
+2 → 7**.
+
+**I had claimed a real reading was impossible, and that was an assertion rather
+than a finding.** Checked: memory needs FFI on Windows and macOS, and this
+project forbids `unsafe` in its own code. Linux would be free through
+`/proc/meminfo` — which would have made the pool's behaviour differ by platform
+for a reason no user could see. So it was a dependency or no probe.
+
+`sysinfo` supplies it now, the same arrangement as sherpa-onnx doing the FFI for
+recognition. `verse-core` keeps its empty dependency list, because the sizing
+*rule* takes bytes and the service reads them. Three packages joined the lock —
+`sysinfo`, `ntapi`, and `objc2-io-kit`, which is macOS-only and not compiled
+here; `windows` and `libc` were already present.
+
+**The first probe returned zero.** `System::new()` uses `RefreshKind::nothing()`
+and leaves the memory total unset; it needs a `refresh_memory()`. Zero is
+indistinguishable from a machine with no memory, and dividing it would have
+collapsed every pool to one worker — silently. The test caught it, and was
+checked to bite by removing the refresh again.
+
+**Total, not available.** Total is a property of the machine; available is a
+property of this moment, and sizing a long-lived pool from what happened to be
+running at startup would shrink it because somebody else was compiling, with
+nothing visible to explain why.
+
+When the probe cannot answer, the old constant is the fallback and `/health`
+reports which of the two was used, so a client can tell a measurement from a
+document.
+
+**Two corrections to my own earlier statements.** I told the maintainer the probe
+would buy "2.5× more workers"; that arithmetic forgot `MAX_WORKERS` and the real
+gap is 6→8 and 2→7. And the note read "33 GB" where Windows shows the same
+machine as "31.2 GB" — both right, one decimal one binary, and it looked like a
+disagreement. It says GiB now, which is what a person sees in Settings.

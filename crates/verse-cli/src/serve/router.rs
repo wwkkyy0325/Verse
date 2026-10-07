@@ -9,7 +9,6 @@ use verse_model::{Catalog, Downloader};
 use super::http::{Head, Response};
 use super::jobs::CancelOutcome;
 use super::Server;
-use super::BUDGET_ASSUMPTION;
 use crate::report;
 
 /// Answer one request.
@@ -246,8 +245,9 @@ fn health(server: &Server) -> Response {
             model_bytes: server.model_bytes,
             overhead_bytes: verse_core::RUNTIME_OVERHEAD_BYTES,
             per_worker_bytes: server.model_bytes + verse_core::RUNTIME_OVERHEAD_BYTES,
-            budget_bytes: verse_core::MEMORY_BUDGET_BYTES,
-            budget_assumption: BUDGET_ASSUMPTION.to_string(),
+            budget_bytes: server.budget.bytes,
+            budget_source: server.budget.source.to_string(),
+            budget_note: server.budget.note.clone(),
             implied_peak_bytes: server.workers as u64
                 * (server.model_bytes + verse_core::RUNTIME_OVERHEAD_BYTES),
         },
@@ -387,6 +387,7 @@ mod tests {
             workers: 1,
             worker_source: "default".to_string(),
             per_worker_threads: verse_core::HardwareProfile::probe().engine_threads(),
+            budget: crate::serve::memory::budget(),
             model_bytes: 0,
             models_dir: dir.to_path_buf(),
             engine: "sensevoice".to_string(),
@@ -445,17 +446,19 @@ mod tests {
             "overheadBytes",
             "perWorkerBytes",
             "budgetBytes",
-            "budgetAssumption",
+            "budgetSource",
+            "budgetNote",
             "impliedPeakBytes",
         ] {
             assert!(value["pool"].get(key).is_some(), "missing pool.{key}");
         }
+        // Either the machine answered or it did not, and the answer says
+        // which — this is where the pool's size comes from, so a client that
+        // disagrees with it should be able to see what it is disagreeing with.
+        let source = value["pool"]["budgetSource"].as_str().expect("a string");
         assert!(
-            value["pool"]["budgetAssumption"]
-                .as_str()
-                .expect("a string")
-                .contains("assumed"),
-            "the budget must say that it is an assumption"
+            source == "probed" || source == "assumed",
+            "budgetSource must say where the number came from, got {source:?}"
         );
         assert!(value["jobs"].get("runningCount").is_some());
 

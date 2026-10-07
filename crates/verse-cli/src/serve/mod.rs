@@ -15,6 +15,7 @@
 
 mod http;
 mod jobs;
+mod memory;
 mod router;
 
 use std::io::Write;
@@ -27,14 +28,6 @@ use verse_core::EventBus;
 use verse_pipeline::ModelKeeper;
 
 use http::{HeadError, Response};
-
-/// What the memory budget is, in words a client can act on.
-///
-/// It is a written assumption rather than a measurement, because reading the
-/// machine's RAM needs FFI and `unsafe` on every platform this project targets
-/// and the project has neither.
-pub const BUDGET_ASSUMPTION: &str =
-    "assumed, not probed: a quarter of the 8 GB machine floor design.md states";
 
 /// The port `serve` uses unless told otherwise.
 ///
@@ -124,6 +117,10 @@ pub struct Server {
     /// What each worker asks the machine for. Set once, so every worker binds
     /// the same model identity.
     pub per_worker_threads: usize,
+    /// Where the pool's memory budget came from, and what it is. Reported
+    /// because a client deserves to know whether the number came from this
+    /// machine or from a document.
+    pub budget: memory::Budget,
     /// The weights one worker loads, from the catalogue. Zero when the engine
     /// is not in the catalogue at all — which makes the pool one, rather than
     /// guessing what it costs.
@@ -210,13 +207,14 @@ pub fn run(config: Config) -> Result<(), String> {
     // model between them allow. The rule is in `verse-core` so the thread half
     // and the memory half cannot drift, and so a reader can check it without
     // reading this function.
+    let budget = memory::budget();
     let (workers, worker_source) = match config.workers {
         Some(asked) => (asked, "flag"),
         None => (
             verse_core::pool_size(
                 hardware.engine_threads(),
                 loaded + verse_core::RUNTIME_OVERHEAD_BYTES,
-                verse_core::MEMORY_BUDGET_BYTES,
+                budget.bytes,
             ),
             "adaptive",
         ),
@@ -234,6 +232,7 @@ pub fn run(config: Config) -> Result<(), String> {
         workers,
         worker_source: worker_source.to_string(),
         per_worker_threads,
+        budget,
         model_bytes: loaded,
         models_dir: config.models_dir.clone(),
         engine: config.engine.clone(),

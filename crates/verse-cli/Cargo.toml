@@ -21,6 +21,21 @@ verse-pipeline.workspace = true
 # re-export path resolution, which is not its business.
 verse-store.workspace = true
 
+# How much memory the machine has, for sizing the service's pool. The budget
+# has to be a property of the machine rather than a constant: anchoring it to
+# the 8 GB floor the project requires gave a machine with 31 GB the same pool as
+# one with 8. Reading memory needs FFI on Windows and macOS, and this project
+# forbids `unsafe` in its own code — so a crate that already does it, the way
+# sherpa-onnx already does FFI, is the honest way to have a real number.
+#
+# `verse-core` is where the sizing *rule* lives and keeps its empty dependency
+# list: the rule takes bytes, and this is what supplies them.
+# `default-features = false` plus `system`: the defaults also carry disk,
+# component, network and user, none of which this needs. `system` is the one
+# that provides `System::total_memory`, and on Windows it is the one that pulls
+# in `windows` and `ntapi`.
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+
 # The request line and the headers, for `verse serve`. Already in this
 # workspace's build graph — Tauri's hyper stack uses it — so this adds a
 # manifest line rather than a crate. It is used for the one genuinely fiddly

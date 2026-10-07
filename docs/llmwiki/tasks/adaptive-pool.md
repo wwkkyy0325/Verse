@@ -182,3 +182,49 @@ guess.
 - **The CLI adopting the pool.** It is finite and already measured, and its
   `thread::scope` path has no lock on the hot path. It shares the rule instead.
 - **Preload / release routes.** Still deferred.
+
+## After the round: the budget becomes a probe
+
+The maintainer's objection was correct and I had it wrong. The budget was a
+constant anchored to the 8 GB floor, and I claimed a real reading was impossible
+without `unsafe`. The first half was a design choice; the second was an
+**assertion I had not checked**.
+
+Checked: reading memory needs FFI on Windows and macOS, and this project forbids
+`unsafe` in its own code. On Linux `/proc/meminfo` is a plain file and would be
+free — which would have made the behaviour differ by platform for a reason no
+user could see. So the choice was a dependency or no probe at all.
+
+`sysinfo` now supplies it — the same arrangement as sherpa-onnx doing the FFI for
+recognition. `verse-core` keeps its empty dependency list, because the sizing
+rule takes bytes and the service is what reads them. Three packages joined the
+lock: `sysinfo`, `ntapi`, and `objc2-io-kit` (macOS only, not compiled here).
+`windows` and `libc` were already in the graph.
+
+**My first attempt at the probe returned zero.** `System::new()` uses
+`RefreshKind::nothing()` and leaves `mem_total` unset; it needs a
+`refresh_memory()` call. Zero is indistinguishable from a machine with no
+memory, and dividing it would have produced a budget of nothing — every worker
+count collapsing to one, silently. The test `this_machine_reports_its_memory`
+caught it, and was checked to bite by removing the refresh again.
+
+**What it changed:**
+
+| | constant | probed |
+|---|---|---|
+| SenseVoice | 6 workers | **8** |
+| Qwen3-ASR | 2 workers | **7** |
+
+The gap is far larger for the big model, and that is the point: the old budget
+was about the size of one Qwen3 worker, so the model that benefits most from a
+pool was the one most held back.
+
+**Also corrected: a units mismatch.** The note said "33 GB" while Windows shows
+the same machine as "31.2 GB". Both were right — one decimal, one binary — and
+it read as a disagreement. The note is in GiB now, which is what a person sees
+in Settings.
+
+**And a claim of mine from before the probe, corrected.** I told the maintainer
+the probe would buy "2.5× more workers" on this machine. That arithmetic forgot
+`MAX_WORKERS`, which caps at 8. The real gap is 6 → 8 for SenseVoice and 2 → 7
+for Qwen3.

@@ -395,11 +395,26 @@ pool = min(MEMORY_BUDGET_BYTES / per_worker_bytes, engine_threads)
          .clamp(1, MAX_WORKERS)
 ```
 
-The budget is **2 GiB, and it is an assumption rather than a probe** — reading
-the machine's RAM needs FFI and `unsafe` on every platform this targets, and the
-project has neither — so it is anchored to the 8 GB floor §3 states and
-**reported to clients through `/health`**, where they can disagree with it. On a
-16-core machine this gives six workers for SenseVoice and two for Qwen3-ASR.
+The budget is **a quarter of the machine's memory, read from the machine**.
+Reading it needs FFI on Windows and macOS, which this project forbids in its own
+code, so `sysinfo` does it — the same arrangement as sherpa-onnx doing the FFI
+for recognition. `verse-core` keeps its empty dependency list: the sizing *rule*
+takes bytes, and the service is what supplies them.
+
+**This was a constant first, and the constant was wrong in the direction that
+costs most.** A quarter of the 8 GB floor §3 requires gave a machine with 31 GiB
+the same pool as one with 8 — and the budget came out about the size of a single
+Qwen3 worker, so the model that benefits most from a pool was given two where
+the machine could hold seven. When the probe cannot answer, that constant is the
+fallback, and `/health` says which of the two it used.
+
+**Total, not available.** Total is a property of the machine; available is a
+property of this moment. Sizing a long-lived pool from what happened to be
+running at startup would shrink it because somebody else was compiling, with
+nothing visible to explain why.
+
+On this 16-core, 31 GiB machine that gives eight workers for SenseVoice and seven
+for Qwen3-ASR.
 
 **One thread budget for the whole pool**, which is an invariant and not a
 tidiness: the settings digest includes the resolved thread count, so workers

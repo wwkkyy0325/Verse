@@ -74,10 +74,12 @@ the job's own time and `queuedMs` the wait; the job that loads the model is the
 slow one.
 
 Several jobs run at once, one per worker. The pool is sized from the machine
-and the model unless `--workers` says otherwise; `/health`'s `pool` object
-reports the number, why it is that number, and the bytes it implies — including
-that the memory budget is an assumption rather than a probe. A single job is
-faster in a pool of one and two dozen finish sooner in a pool of six.
+and the model unless `--workers` says otherwise: the memory budget is a quarter
+of what the machine reports, divided by what one worker costs. `/health`'s
+`pool` object reports the number, why it is that number, and the bytes it
+implies, including whether the budget was probed or fell back to the assumption
+used when a machine will not say. A single job is faster in a pool of one, and
+two dozen finish sooner in a pool of eight.
 
 Finished jobs are kept for the most recent 32 and then evicted, so a poll for a
 very old id is a 404 whose message says so. The queue holds 32 and refuses

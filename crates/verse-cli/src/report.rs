@@ -200,9 +200,12 @@ pub struct PoolInfo {
     pub overhead_bytes: u64,
     pub per_worker_bytes: u64,
     pub budget_bytes: u64,
-    /// That the budget is a written assumption rather than a probe, so a client
-    /// reading this number knows what it is worth.
-    pub budget_assumption: String,
+    /// `probed` when the machine reported its memory, `assumed` when it did
+    /// not and the 8 GB floor was used instead. A client reading `budgetBytes`
+    /// is entitled to know which.
+    pub budget_source: String,
+    /// The same in a sentence, naming the number it came from.
+    pub budget_note: String,
     /// What the pool implies at its fullest, so the arithmetic is checkable
     /// rather than hidden.
     pub implied_peak_bytes: u64,
