@@ -211,7 +211,6 @@ enum Event {
     TranscriptSegment { job: JobId, segment: Segment },
     TranscriptFinal   { job: JobId, transcript: Transcript },
     // environment
-    HardwareProbed    { profile: HardwareProfile },
     ModelStateChanged { model: ModelId, state: ModelState },
 }
 ```

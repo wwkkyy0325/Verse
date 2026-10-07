@@ -17,6 +17,7 @@
     importModel,
     onFileDrop,
     onUpdate,
+    probeHardware,
     reset,
     transcribe,
     type About,
@@ -51,6 +52,12 @@
   let aboutOpen = $state(false);
   let aboutContent = $state<About | null>(null);
 
+  // Why this machine is being worked around, when it is. Nothing on a machine
+  // with nothing to report, which is the usual case — and a bar rather than a
+  // dialog, because the user cannot act on it and interrupting them about a
+  // slowdown is worse than the slowdown.
+  let notice = $state<string | null>(null);
+
   // The path of the file in hand. The backend reports file *names* — a full
   // path is usually too long to show and never what the user needs to read —
   // so the window keeps the path it was handed, which is what a retry needs.
@@ -71,6 +78,11 @@
 
     void (async () => {
       screen = await currentScreen();
+
+      // Asked once, and asked separately: this is a property of the machine
+      // rather than of whatever job happens to be running, so it is not part
+      // of the screen. Nothing on a machine that has nothing to report.
+      notice = (await probeHardware()).degraded;
 
       stopUpdates = await onUpdate((update) => {
         switch (update.kind) {
@@ -280,6 +292,18 @@
     {/if}
     <Button variant="ghost" size="sm" onclick={() => void showAbout()}>关于</Button>
   </header>
+
+  <!-- Hand-written rather than the vendored `Alert`, which ui-design.md §5
+       names for this: that table admits a component when two screens need it,
+       and only this one does. A full-width bar is also what §3 describes, and
+       an `Alert` is a rounded box inside padding. -->
+  {#if notice}
+    <div class="bg-muted/40 flex shrink-0 items-center gap-3 border-b px-5 py-2">
+      <span class="text-muted-foreground text-xs">{notice}</span>
+      <span class="flex-1"></span>
+      <Button variant="ghost" size="sm" onclick={() => (notice = null)}>知道了</Button>
+    </div>
+  {/if}
 
   {#if screen.kind === "empty"}
     <button

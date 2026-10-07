@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
-use verse_core::{CancelToken, ExportFormat, HardwareProfile};
+use verse_core::{CancelToken, ExportFormat, HardwareProfile, Weakness};
 use verse_model::{Catalog, Downloader, DownloadState};
 
 use bridge::{App, DownloadView, Update, UPDATE};
@@ -47,7 +47,9 @@ pub struct HardwareSummary {
     /// which is the difference between a responsive window and a frozen one
     /// on an older machine.
     pub threads: usize,
-    /// Why this machine is being worked around, if it is.
+    /// Why this machine is being worked around, if it is — the sentence the
+    /// window puts in its notice bar, in Chinese. `None` when nothing is wrong,
+    /// which is the usual case.
     pub degraded: Option<String>,
 }
 
@@ -78,14 +80,41 @@ fn models_dir() -> PathBuf {
 /// models and is told why.
 #[tauri::command]
 fn hardware() -> HardwareSummary {
-    let profile = HardwareProfile::probe();
+    hardware_summary(HardwareProfile::probe())
+}
 
+/// The summary for a profile that has already been read.
+///
+/// Split out from the command so the answer can be tested against a machine
+/// that is not this one — the `degraded` arm is `None` here whatever the test
+/// machine is, and a test that only ever sees `None` would pass while the
+/// notice was broken.
+fn hardware_summary(profile: HardwareProfile) -> HardwareSummary {
     HardwareSummary {
         avx2: profile.avx2,
         cores: profile.cores,
         threads: profile.engine_threads(),
-        degraded: profile.tier().notice(),
+        degraded: profile.tier().weakness().map(window_notice),
     }
+}
+
+/// The reduced-mode line the window shows.
+///
+/// Chinese, and composed here rather than reusing `Tier::notice()`: that one is
+/// English, because it is also what `verse` writes to stderr. The window is
+/// Chinese throughout (ui-design.md §8), so the same fact has to be rendered
+/// twice — but both renderings read the same [`Weakness`], so the two can
+/// disagree about wording and not about what is wrong with the machine.
+///
+/// The sentence ends by saying the app still works, because that is the point:
+/// a machine in reduced mode is slower, not broken.
+fn window_notice(weakness: Weakness) -> String {
+    let reason = match weakness {
+        Weakness::NoAvx2 => "这台电脑的 CPU 不支持 AVX2",
+        Weakness::SingleCore => "这台电脑只有一个 CPU 核心",
+    };
+
+    format!("正在以精简模式运行：{reason}。转写仍然可用，只是会更慢。")
 }
 
 /// What the window should be showing right now.
@@ -428,6 +457,67 @@ mod tests {
             std::fs::create_dir_all(parent).expect("create parent");
         }
         std::fs::write(path, b"x").expect("write");
+    }
+
+    fn machine(avx2: bool, cores: usize) -> HardwareProfile {
+        HardwareProfile {
+            avx2,
+            fma: avx2,
+            cores,
+        }
+    }
+
+    #[test]
+    fn a_machine_with_nothing_to_report_gets_no_notice() {
+        // The common case, and the one that has to stay silent: a bar about
+        // hardware on a machine where nothing is wrong is noise.
+        assert_eq!(hardware_summary(machine(true, 8)).degraded, None);
+    }
+
+    #[test]
+    fn a_reduced_machine_gets_a_sentence_the_window_can_show() {
+        let notice = hardware_summary(machine(false, 8))
+            .degraded
+            .expect("a machine without AVX2 is worked around, and must say so");
+
+        assert!(
+            notice.contains("AVX2"),
+            "it has to name what is missing, or it is not worth showing: {notice}"
+        );
+        assert!(
+            notice.contains("仍然可用"),
+            "a reduced machine is slower, not broken, and the sentence has to \
+             say so rather than read as a failure: {notice}"
+        );
+        assert!(
+            notice.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+            "ui-design.md §8 keeps the window's copy in Chinese: {notice}"
+        );
+    }
+
+    #[test]
+    fn the_two_weaknesses_do_not_get_the_same_sentence() {
+        // A cursor on the wrong arm would give every reduced machine the same
+        // sentence, which is a quieter bug than no sentence at all.
+        assert_ne!(window_notice(Weakness::NoAvx2), window_notice(Weakness::SingleCore));
+    }
+
+    #[test]
+    fn the_hardware_summary_is_shaped_the_way_the_window_reads_it() {
+        // The window takes this apart by name. A field renamed here arrives as
+        // `undefined` and the notice simply does not appear — a missing bar
+        // rather than an error, which is the failure this pins shut.
+        let value = serde_json::to_value(hardware_summary(machine(false, 8))).expect("serializes");
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "avx2": false,
+                "cores": 8,
+                "threads": 7,
+                "degraded": window_notice(Weakness::NoAvx2),
+            })
+        );
     }
 
     /// The shape Qwen3 actually has: a nested tokenizer directory.

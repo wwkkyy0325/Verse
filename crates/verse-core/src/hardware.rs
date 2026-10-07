@@ -19,13 +19,28 @@ pub struct HardwareProfile {
     pub cores: usize,
 }
 
+/// What a machine is missing, when it is missing something.
+///
+/// Structured rather than a sentence, because one fact has two renderings: the
+/// English line `verse` prints to stderr, and the Chinese line the window shows
+/// (ui-design.md §8 keeps the command line and the window in different
+/// languages). Both are derived from this value, so neither can drift from the
+/// other by matching on the other's prose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Weakness {
+    /// No AVX2, so the recognition kernels take their slow path.
+    NoAvx2,
+    /// One core, so there is nothing to run in parallel.
+    SingleCore,
+}
+
 /// How much this machine should be asked to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tier {
     /// Nothing to work around.
     Full,
     /// Run small models, and say why.
-    Reduced { reason: &'static str },
+    Reduced { weakness: Weakness },
 }
 
 impl Default for HardwareProfile {
@@ -83,13 +98,13 @@ impl HardwareProfile {
             // The recognition kernels have fallback paths, but they are slow
             // enough that a large model would not keep up.
             return Tier::Reduced {
-                reason: "this CPU does not support AVX2",
+                weakness: Weakness::NoAvx2,
             };
         }
 
         if self.cores < 2 {
             return Tier::Reduced {
-                reason: "this machine reports a single CPU core",
+                weakness: Weakness::SingleCore,
             };
         }
 
@@ -111,18 +126,30 @@ impl Tier {
         matches!(self, Tier::Reduced { .. })
     }
 
-    /// Why, when something is.
-    pub fn reason(&self) -> Option<&'static str> {
+    /// What is being worked around, when something is.
+    pub fn weakness(&self) -> Option<Weakness> {
         match self {
-            Tier::Reduced { reason } => Some(reason),
+            Tier::Reduced { weakness } => Some(*weakness),
             Tier::Full => None,
         }
+    }
+
+    /// Why, when something is. English prose, for logs and the command line.
+    pub fn reason(&self) -> Option<&'static str> {
+        self.weakness().map(|weakness| match weakness {
+            Weakness::NoAvx2 => "this CPU does not support AVX2",
+            Weakness::SingleCore => "this machine reports a single CPU core",
+        })
     }
 
     /// A message worth showing the user, or `None` when nothing is wrong.
     ///
     /// Phrased as something that was done, not something that failed — the
     /// point is that the app still works.
+    ///
+    /// English, and not the window's copy: this is what `verse` writes to
+    /// stderr, and the command line's output is English throughout. The window
+    /// renders [`Weakness`] itself, in Chinese.
     pub fn notice(&self) -> Option<String> {
         self.reason()
             .map(|reason| format!("Running in reduced mode because {reason}."))
@@ -138,15 +165,19 @@ impl Tier {
 /// at eight — so this is a deliberate stop rather than a knee that was found.
 pub const MAX_WORKERS: usize = 8;
 
-/// How much memory the workers may hold between them.
+/// How much memory the workers may hold between them, when the machine will
+/// not say how much it has.
 ///
-/// **A written assumption, not a probe.** Reading the machine's RAM needs FFI
-/// and `unsafe`, which this project does not have, so this is reasoned from the
-/// 8 GB floor `design.md` §3 commits to: a quarter of it, which leaves the rest
-/// for the operating system, the window's webview, and the audio being decoded.
+/// **A fallback, not the budget.** The budget is a quarter of what the machine
+/// reports, read at startup by `verse-cli`'s service via `sysinfo` — which does
+/// the FFI this project forbids in its own code, the same arrangement as
+/// sherpa-onnx doing it for recognition. This constant is what remains for a
+/// machine that answers with nothing, and it is anchored to the 8 GB floor
+/// `design.md` §3 commits to: a quarter of it, which leaves the rest for the
+/// operating system, the window's webview, and the audio being decoded.
 ///
-/// It is reported to clients so it can be disagreed with rather than merely
-/// obeyed.
+/// Which of the two was used is reported to clients, so the assumption can be
+/// disagreed with rather than merely obeyed.
 pub const MEMORY_BUDGET_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 /// What one worker costs beyond its weights.
@@ -238,6 +269,17 @@ mod tests {
             tier.notice().is_none(),
             "nothing to report when nothing is wrong"
         );
+    }
+
+    #[test]
+    fn both_renderings_of_a_weakness_come_from_the_same_value() {
+        // The command line says it in English and the window says it in
+        // Chinese, and there is no way for those two to disagree about *which*
+        // problem a machine has, because both read this one value rather than
+        // each matching on the other's sentence.
+        assert_eq!(profile(false, 8).tier().weakness(), Some(Weakness::NoAvx2));
+        assert_eq!(profile(true, 1).tier().weakness(), Some(Weakness::SingleCore));
+        assert_eq!(profile(true, 8).tier().weakness(), None);
     }
 
     #[test]

@@ -24,8 +24,8 @@ pub use error::{Error, ErrorInfo, ErrorKind, Result};
 pub use event::{Event, EventBus, JobKind, Subscription};
 pub use export::Format as ExportFormat;
 pub use hardware::{
-    per_worker_threads, pool_size, HardwareProfile, Tier, MAX_WORKERS, MEMORY_BUDGET_BYTES,
-    RUNTIME_OVERHEAD_BYTES,
+    per_worker_threads, pool_size, HardwareProfile, Tier, Weakness, MAX_WORKERS,
+    MEMORY_BUDGET_BYTES, RUNTIME_OVERHEAD_BYTES,
 };
 pub use registry::{
     EngineConfig, EngineDescriptor, Registry, SinkConfig, SinkDescriptor, SourceConfig,
@@ -138,12 +138,11 @@ mod tests {
             id: JobId(2),
             kind: JobKind::LiveSubtitle,
         });
-        bus.publish(Event::HardwareProbed {
-            profile: HardwareProfile {
-                avx2: true,
-                fma: true,
-                cores: 8,
-            },
+        // Belongs to no job, so it has to reach `subscribe_all` and not the
+        // subscriber that asked for job 1.
+        bus.publish(Event::ModelStateChanged {
+            model: ModelId("sensevoice"),
+            state: ModelState::Ready,
         });
 
         assert_eq!(for_job_1.drain().len(), 1);

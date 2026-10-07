@@ -197,8 +197,6 @@ pub struct AppState {
     /// The engine this session uses. Not user-facing in P1b — the design
     /// requires that the default path involve no technical decisions.
     model: String,
-    /// Shown once, under the header, when the machine is running degraded.
-    hardware_notice: Option<String>,
     about_open: bool,
 }
 
@@ -214,7 +212,6 @@ impl AppState {
             screen: Screen::Empty,
             job: None,
             model: DEFAULT_MODEL.to_string(),
-            hardware_notice: None,
             about_open: false,
         }
     }
@@ -223,21 +220,12 @@ impl AppState {
         &self.screen
     }
 
-    pub fn hardware_notice(&self) -> Option<&str> {
-        self.hardware_notice.as_deref()
-    }
-
     pub fn about_open(&self) -> bool {
         self.about_open
     }
 
     pub fn set_about_open(&mut self, open: bool) {
         self.about_open = open;
-    }
-
-    /// Stop showing the degraded-hardware notice.
-    pub fn dismiss_hardware_notice(&mut self) {
-        self.hardware_notice = None;
     }
 
     // ------------------------------------------------------------ user input
@@ -354,27 +342,15 @@ impl AppState {
 
     /// Handle one event from the bus, reporting what the user can see change.
     pub fn apply(&mut self, event: &Event) -> Applied {
-        match event {
-            // Claimed here rather than at dispatch: the id is assigned by the
-            // pipeline, so the screen can only learn it from this event.
-            Event::JobStarted { id, .. } => {
-                if matches!(self.screen, Screen::Working(_)) && self.job.is_none() {
-                    self.job = Some(*id);
-                }
-                return Applied::Nothing;
+        // Claimed here rather than at dispatch: the id is assigned by the
+        // pipeline, so the screen can only learn it from this event. Before
+        // the ownership check below — `owns` reads the very id this sets, so
+        // running it first would reject the event that would have claimed it.
+        if let Event::JobStarted { id, .. } = event {
+            if matches!(self.screen, Screen::Working(_)) && self.job.is_none() {
+                self.job = Some(*id);
             }
-
-            // Environment, not job output: belongs to every screen.
-            Event::HardwareProbed { profile } => {
-                let notice = profile.tier().notice();
-                if notice == self.hardware_notice {
-                    return Applied::Nothing;
-                }
-                self.hardware_notice = notice;
-                return Applied::Screen;
-            }
-
-            _ => {}
+            return Applied::Nothing;
         }
 
         if !self.owns(event) {
@@ -509,7 +485,7 @@ fn message_for(error: &ErrorInfo) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use verse_core::{HardwareProfile, SegmentId};
+    use verse_core::SegmentId;
 
     fn a_segment(text: &str) -> Segment {
         Segment {
@@ -922,35 +898,6 @@ mod tests {
             panic!("should be working");
         };
         assert_eq!(working.position, Duration::ZERO);
-    }
-
-    #[test]
-    fn a_hardware_notice_appears_and_can_be_dismissed() {
-        let mut state = AppState::new();
-        let reduced = HardwareProfile {
-            avx2: false,
-            fma: false,
-            cores: 4,
-        };
-
-        state.apply(&Event::HardwareProbed { profile: reduced });
-        assert!(state.hardware_notice().is_some());
-
-        state.dismiss_hardware_notice();
-        assert!(state.hardware_notice().is_none());
-    }
-
-    #[test]
-    fn a_capable_machine_says_nothing_about_hardware() {
-        let mut state = AppState::new();
-        let full = HardwareProfile {
-            avx2: true,
-            fma: true,
-            cores: 8,
-        };
-
-        state.apply(&Event::HardwareProbed { profile: full });
-        assert!(state.hardware_notice().is_none());
     }
 
     #[test]

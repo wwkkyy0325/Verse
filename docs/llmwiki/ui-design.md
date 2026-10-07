@@ -372,13 +372,16 @@ Two things still need eyes rather than reasoning, and both are checked in step
 
 Two kinds of text, two places.
 
-**Static labels** live in the `.slint` files as literals — button text, screen
-titles, section headings. They change with layout, they are part of the view.
+**Static labels** live in the Svelte components as literals — button text,
+screen titles, section headings. They change with layout, they are part of the
+view.
 
 **Computed text** comes from Rust: error messages, progress descriptions,
-model names, the hardware notice. It is produced by `state.rs`, which means it
-is testable (`assert!(msg.contains("重试"))`) and it keeps message construction
-out of the view layer.
+model names, the hardware notice. It is produced by `state.rs`, and by the
+window's own commands for anything that is a property of the machine rather
+than of the job — which means it is testable
+(`assert!(msg.contains("重试"))`) and it keeps message construction out of the
+view layer.
 
 Rules for what these strings say:
 

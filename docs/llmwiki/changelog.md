@@ -1491,3 +1491,115 @@ would buy "2.5× more workers"; that arithmetic forgot `MAX_WORKERS` and the rea
 gap is 6→8 and 2→7. And the note read "33 GB" where Windows shows the same
 machine as "31.2 GB" — both right, one decimal one binary, and it looked like a
 disagreement. It says GiB now, which is what a person sees in Settings.
+
+## 2026-10-07 — The notice nobody could see
+
+Asking whether the frontend was the next thing to build turned up a feature that
+had been reporting success at every layer while reaching nobody. **The
+reduced-mode notice** — the one line that tells a person their machine is being
+worked around — was produced, wrapped, and named by a command, and rendered
+nowhere.
+
+What was there: `Tier::Reduced` with its reason; `verse` printing the notice to
+stderr (`main.rs:456`); the `hardware` command returning it
+(`verse-app/src/lib.rs:80`); and a typed `probeHardware()` in `api.ts` with **no
+caller**. `App.svelte` never asked and never drew it. A machine without AVX2 got
+a window that looked entirely normal and was simply slower, with nothing saying
+why.
+
+**Two dead paths found at the same time, and left in place.** The convention here
+is to report dead code rather than remove it, and neither of these is mine to
+delete, so both are recorded instead:
+
+- `Event::HardwareProbed` **has no publisher**. It is defined, handled at
+  `state.rs:368` and tested at `state.rs:928`, but the only `publish` in the
+  workspace is inside a test of the bus itself. Nothing in production emits it.
+- `AppState::hardware_notice` **could not reach the wire even if it did** —
+  `bridge.rs` never reads the field and `Update` has no variant for it. The
+  handler returns `Applied::Screen`, so the state machine believes it has told
+  the user, and the `Update::Screen` it produces carries the unchanged screen.
+
+**Not a one-line change, because of language.** `ui-design.md` §8 keeps the
+window's copy in Chinese and the command line's in English, and `Tier::notice()`
+is English — it is what `verse` writes to stderr, and it has to stay that way.
+The window cannot reuse it and should not translate it: the only structured
+handle on *which* problem a machine has was a prose string, and matching on prose
+to choose copy is how two renderings of one fact drift apart.
+
+So `Tier::Reduced { reason: &'static str }` became
+`Tier::Reduced { weakness: Weakness }`, with `NoAvx2` and `SingleCore`
+exhaustively matched. `reason()` and `notice()` derive their English from it
+unchanged; the window derives Chinese from the same value. Both renderings now
+read one fact instead of each parsing the other's sentence.
+
+`hardware_summary()` was split out of the command so the reduced case can be
+tested against a machine that is not this one — the `degraded` arm is `None`
+here, and a test that only ever sees `None` would pass while the notice was
+broken. **Checked to bite:** putting `tier().notice()` back makes
+`a_reduced_machine_gets_a_sentence_the_window_can_show` fail, which it does.
+
+The bar is hand-written rather than the vendored `Alert` that `ui-design.md` §5
+names for it: that table admits a component when **two** screens need it, and
+only this one does. §3 asks for a full-width one-line bar, and an `Alert` is a
+rounded box inside padding.
+
+**Also corrected:** `MEMORY_BUDGET_BYTES` still described itself as *"a written
+assumption, not a probe"* and said reading memory *"needs FFI and `unsafe`, which
+this project does not have"* — the opposite of what the previous round made true.
+A comment that contradicts its code is how the next reader builds on a false
+premise; it was mine, from the round that added the probe.
+
+**What is still not verified.** The bar has never been on screen. This machine
+has AVX2, so `degraded` is `None` here; seeing it would take a machine without
+AVX2 or a forced profile written only for a screenshot. The data path is pinned
+to the JSON boundary by a contract test — field names and all — and the
+`{#if notice}` that draws it is unexercised. It joins the click-through in
+`tasks/p1b-screens.md` step 4 as something that needs a person at the window.
+
+334 tests, clippy clean.
+
+Noticed and not touched: `ui-design.md` §8 still says static labels "live in the
+`.slint` files", which the toolkit has not been since the window moved to Tauri
+and Svelte.
+
+## 2026-10-07 — Removing the notice's second, dead implementation
+
+The reduced-mode notice had two implementations: the one the window now uses,
+and an older one built on `Event::HardwareProbed` that could not work. Both are
+gone, at the maintainer's instruction.
+
+Left in place, the dead copy was a trap rather than merely clutter. It had a
+handler (`state.rs`), two passing tests, and no publisher — so the next person
+to notice the event was never emitted and add a publisher would have got a
+second silent failure out of the same mistake, because `bridge.rs` never read
+the field and `Update` had no variant to carry it.
+
+| removed | where |
+|---|---|
+| `Event::HardwareProbed` | `verse-core/src/event.rs` — the variant, the `job()` arm, and the `HardwareProfile` import it was the last user of |
+| its only `publish` | `verse-core/src/lib.rs` — replaced by `ModelStateChanged` |
+| the handler and its state | `verse-app/src/state.rs` — the arm, `hardware_notice`, `hardware_notice()`, `dismiss_hardware_notice()`, and two tests |
+
+**`Event::ModelStateChanged` was left alone on purpose.** It is equally
+unpublishable, but it is *documented* as considered and reverted
+(`tasks/p1b-screens.md` §2), which makes it a decision someone took rather than a
+path someone abandoned — and it now carries the case the bus test exists for: an
+event belonging to no job reaching `subscribe_all()` and not a job-filtered
+subscriber. Deleting it would have quietly weakened that test to two events that
+both belong to jobs.
+
+**The deletion forced one change of its own.** `apply`'s first `match` had two
+arms and one of them was this; removing it left a single-pattern match, which
+clippy flags, so it is an `if let` now. Its placement ahead of the `owns` check
+is load-bearing and was already so: `owns` compares `event.job()` against the id
+this arm is what sets, so running it first would reject the event that would
+have claimed the job — and every event after it.
+
+Also corrected: `ui-design.md` §8 said static labels live in "the `.slint`
+files", a toolkit this project has not used since the window moved to Tauri and
+Svelte, and credited the hardware notice to `state.rs`, which is no longer where
+it comes from. `design.md` §9 and `tasks/agent-cli.md` record the same class of
+correction being made before.
+
+332 tests — two fewer than before, and they are precisely the two that asserted
+a field nothing could set. Clippy clean.

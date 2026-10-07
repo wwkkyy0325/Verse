@@ -1,6 +1,5 @@
 use crate::domain::{JobId, ModelId, ModelState, Segment, Transcript, TranscriptDelta};
 use crate::error::ErrorInfo;
-use crate::hardware::HardwareProfile;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, Weak};
@@ -70,9 +69,6 @@ pub enum Event {
     },
 
     // ---- environment ----
-    HardwareProbed {
-        profile: HardwareProfile,
-    },
     ModelStateChanged {
         model: ModelId,
         state: ModelState,
@@ -92,7 +88,7 @@ impl Event {
             | Event::TranscriptSegment { job, .. }
             | Event::TranscriptFinal { job, .. }
             | Event::TranscriptDiscarded { job } => Some(*job),
-            Event::HardwareProbed { .. } | Event::ModelStateChanged { .. } => None,
+            Event::ModelStateChanged { .. } => None,
         }
     }
 }
