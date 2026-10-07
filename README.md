@@ -109,13 +109,19 @@
 cargo build --release
 ```
 
-运行需要两样东西：
+**安装包自带 ffmpeg。** 一份 **LGPL** 构建，放在程序旁边——用 `PATH` 上那一份是
+次选，因为自带的那份是发布时测过的那份；想用你自己的就设 `VERSE_FFMPEG`，它优先级
+最高。（从源码运行才需要自己准备：`PATH` 上有一个，或者设 `VERSE_FFMPEG`。）
 
-- **ffmpeg** 在 `PATH` 上（或设 `VERSE_FFMPEG` 指向它）。所有格式都是**调用**
-  ffmpeg 处理的，从不链接它——它崩了、泄漏了，都传不到主进程。
-- **模型**。`verse model fetch sensevoice` 拿默认那个，228 MB，VAD 模型随它一起。
-  `verse model list` 看已装了什么、占多少磁盘，`verse model remove <id>` 删掉一个，
-  `verse model clean` 清掉下了一半的。
+所有格式都是**调用** ffmpeg 处理的，从不链接它——它崩了、泄漏了，都传不到主进程。
+哪一份构建、源码在哪，见 `THIRD_PARTY_NOTICES.md`。
+
+还需要**模型**：`verse model fetch sensevoice` 拿默认那个，228 MB，VAD 模型随它一起。
+`verse model list` 看已装了什么、占多少磁盘，`verse model remove <id>` 删掉一个，
+`verse model clean` 清掉下了一半的。
+
+**发布包只出 Windows 和 Linux。** macOS 不做也不支持——理由（一份没有 LGPL 构建的
+平台）写在 `.github/workflows/release.yml` 里。
 
 构建会下载一份预编译的 sherpa-onnx，网络慢的话看 `docs/llmwiki/design.md` §7.2。
 
@@ -217,7 +223,7 @@ $ verse transcribe recordings/ -o out/ --json 2>/dev/null | jq -r '.results[].te
 - **总结** —— 试过了，见上面"试过，但没做"。
 - **权重不进安装包** —— Qwen3 是 1 GB，而且它的 ONNX 权重来自第三方上传；内置
   会让每个用户为一个大多数人用不到的能力付费。
-- **Windows 优先** —— 管线是跨平台的，窗口和安装包目前按 Windows 打磨。
+- **macOS** —— 不做，见上面安装一节。
 
 ## 开发
 

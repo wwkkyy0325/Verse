@@ -1,0 +1,97 @@
+# What runs on every push and every pull request.
+#
+# Two jobs, split by what they cost and what they catch.
+#
+# `test` runs on Linux because that is where ffmpeg is one line to install, and
+# the audio tests skip themselves without it — which is honest but is also less
+# coverage than this project wants on the one run nobody can skip.
+#
+# `check` runs on Windows and only type-checks. This project was written, built
+# and measured on Windows, and the Linux guards have never been compiled
+# anywhere else — but they are compiled by `test` above, which runs on Linux, so
+# this job exists for the reverse: that a Windows-only path still compiles when
+# something is changed from a Linux runner. macOS is not supported and is not
+# checked; see the release workflow for why.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push supersedes the first: what matters is whether the tip is green.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: tests and lints
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # Tauri's Linux build needs these before `cargo check` will look at
+      # `verse-app` at all. They are the documented Tauri v2 prerequisites.
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev build-essential file
+
+      # Not a dependency of building — a dependency of *testing*. The audio
+      # tests skip when ffmpeg is missing, so without this the suite would pass
+      # having checked less than a developer's does.
+      - name: ffmpeg
+        run: sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/verse-app/ui/package-lock.json
+
+      - name: Frontend dependencies
+        working-directory: crates/verse-app/ui
+        run: npm ci
+
+      - name: Frontend types
+        working-directory: crates/verse-app/ui
+        run: npm run check
+
+      # The model weights are not in the repository and are not fetched here.
+      # Tests that need them skip, which is why this can run at all.
+      - name: Tests
+        run: cargo test --workspace
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  check:
+    name: compiles on Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: check-windows
+
+      # `--all-targets` so the test code is compiled too: the platform-specific
+      # path in `reveal_in_folder` is behind a `#[cfg]` per operating system,
+      # and a check that skipped the tests would not compile two of the three.
+      - name: Check
+        run: cargo check --workspace --all-targets

@@ -133,15 +133,31 @@ link against its libraries. That is the arrangement most commonly held to keep
 the caller independent of FFmpeg's license. It is also the reason no FFmpeg
 code is compiled into Verse.
 
-**Before shipping: decide how ffmpeg reaches the user.** Three options, in
-increasing order of legal comfort:
+**Decided: an LGPL build is bundled (option 2).** The alternative was to
+require the user to install ffmpeg, which breaks the "install and run" goal the
+whole project is built around.
 
-1. Require the user to install ffmpeg themselves — no distribution, no
-   obligation, but it breaks the "install and run" goal.
-2. Bundle an **LGPL** build and ship its license and source offer.
-3. Bundle a GPL build and accept the GPL's terms for the distribution.
+The source is **BtbN/FFmpeg-Builds**, whose release listing publishes `-lgpl`
+archives for Windows and Linux — checked rather than assumed: `win64`,
+`winarm64`, `linux64` and `linuxarm64` all exist in both static and shared
+forms. The static one is fetched, so the bundle carries a single file.
 
-Option 2 is the likely target. This needs a decision, not a default.
+**That project publishes nothing for macOS**, and the well-known macOS ffmpeg
+builds elsewhere are GPL. Rather than accept a GPL binary on one platform or
+build ffmpeg from source there, **macOS is not supported**. See the release
+workflow for the whole of that reasoning.
+
+The licence text ships with the product, and the source offer it needs is:
+
+- ffmpeg itself — <https://ffmpeg.org/releases/> (the version is pinned in the
+  release workflow as `FFMPEG_VERSION`)
+- how that binary was built — <https://github.com/BtbN/FFmpeg-Builds>
+
+The bundled file is a **sidecar**: `tauri.conf.json` declares it under
+`externalBin`, and `tauri-bundler` installs it beside the program with the
+target-triple suffix stripped. `verse-audio` looks for it there before `PATH`,
+so an installed copy uses the ffmpeg it shipped with rather than whatever the
+machine happens to have.
 
 Upstream: <https://ffmpeg.org/legal.html>
 

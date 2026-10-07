@@ -26,3 +26,13 @@ node_modules/
 # crates/verse-app/icons is committed because the build needs it and does not
 # regenerate it.
 /tools/verse-icon.png
+
+# ffmpeg, fetched by the release workflow and never committed. Named with the
+# target triple because `externalBin` expects it and the bundler strips that
+# suffix when it installs the file beside the program.
+/ffmpeg-bin
+
+# Written by the release workflow to declare the bundled ffmpeg for that build.
+# It cannot live in the committed config: `tauri-build` checks `externalBin`
+# from the build script, so a missing file there breaks `cargo test`.
+/crates/verse-app/tauri.release.conf.json

@@ -1,0 +1,174 @@
+# Tag a commit `v0.1.0` and this builds the installers and opens a draft
+# release with them attached.
+#
+# Three platforms, because Tauri's bundles are per-platform and none of them can
+# be produced from another:
+#
+#   windows-latest  .msi and .exe (NSIS)
+#   ubuntu-22.04    .deb and .AppImage
+#
+# **macOS is not built, and is not supported.** It was in this matrix until the
+# lgpl problem turned out to have no good answer there: BtbN/FFmpeg-Builds
+# publishes no darwin assets, the well-known macOS ffmpeg builds are GPL, and
+# building from source would need an ad-hoc signature on top or Apple silicon
+# will not execute the result. That is three unusual problems for a platform
+# this project has never been built on. Dropped deliberately rather than left
+# half-working.
+#
+# ## ffmpeg is bundled, and the licence is the reason for the split below
+#
+# The program invokes ffmpeg as a child process and never links it, which keeps
+# its own code clear of ffmpeg's licence — but *distributing* a binary is a
+# separate question from linking one, and a GPL build would carry the GPL's
+# terms into this distribution. So the bundled ffmpeg is an LGPL build, and
+# there is no single place to get one for all three platforms:
+#
+# Both platforms get theirs from BtbN/FFmpeg-Builds, which publishes `-lgpl`
+# archives explicitly. Checked rather than assumed: the release listing has
+# win64, winarm64, linux64 and linuxarm64 in `-lgpl` and `-lgpl-shared`. The
+# static one is a single file, which is why it is the one fetched.
+#
+# **Nothing here is code-signed.** There is no Windows certificate in this
+# repository, so the installers show a SmartScreen warning. That is a decision
+# about accounts and money rather than about this file.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  # So a bundle can be tried without publishing anything.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # The upstream release macOS is built from, and the reason it is pinned: the
+  # licence recorded in THIRD_PARTY_NOTICES.md is the licence of a version, and
+  # "latest" is not one.
+  FFMPEG_VERSION: "8.0.1"
+
+jobs:
+  bundle:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows
+            os: windows-latest
+          - name: linux
+            os: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System libraries
+        if: matrix.name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev build-essential file
+
+      # BtbN's archive has a version-stamped top directory, so the file is
+      # found by name rather than by a path that will change under us.
+      - name: ffmpeg — the LGPL build
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ffmpeg-bin
+          # The sidecar name carries the target triple, because the bundler
+          # strips exactly that suffix on the way in: it copies
+          # `ffmpeg-x86_64-unknown-linux-gnu` to `ffmpeg` beside the program,
+          # which is where `verse-audio` looks for it. Read out of
+          # `tauri-bundler`'s `Settings::copy_binaries` rather than guessed —
+          # naming it `ffmpeg` here would install a file the config cannot
+          # resolve.
+          if [ "${{ matrix.name }}" = "windows" ]; then
+            url="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl.zip"
+            curl -fsSL "$url" -o ffmpeg.zip
+            unzip -q ffmpeg.zip -d ffmpeg-unpacked
+            find ffmpeg-unpacked -name ffmpeg.exe               -exec cp {} ffmpeg-bin/ffmpeg-x86_64-pc-windows-msvc.exe +
+          else
+            url="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-lgpl.tar.xz"
+            curl -fsSL "$url" -o ffmpeg.tar.xz
+            mkdir -p ffmpeg-unpacked
+            tar -xJf ffmpeg.tar.xz -C ffmpeg-unpacked
+            find ffmpeg-unpacked -name ffmpeg -type f               -exec cp {} ffmpeg-bin/ffmpeg-x86_64-unknown-linux-gnu +
+          fi
+          chmod +x ffmpeg-bin/*
+
+      - name: ffmpeg is where the bundler expects it
+        shell: bash
+        run: ls -la ffmpeg-bin/
+
+      # Declared here and not in `tauri.conf.json`, and the difference is not
+      # stylistic: `tauri-build` validates `externalBin` from the *build
+      # script*, so a committed entry naming a file that has not been fetched
+      # fails `cargo check`, `cargo test` and every contributor's first build —
+      # not only a bundle. Measured, by writing it into the config and watching
+      # `cargo check` fail with "resource path ... does not exist".
+      #
+      # `--config` merges over the project's own file for this build alone.
+      - name: Declare the bundled ffmpeg for this build
+        shell: bash
+        run: |
+          cat > crates/verse-app/tauri.release.conf.json <<'JSON'
+          {
+            "bundle": {
+              "externalBin": ["../../ffmpeg-bin/ffmpeg"]
+            }
+          }
+          JSON
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.name }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/verse-app/ui/package-lock.json
+
+      - name: Frontend dependencies
+        working-directory: crates/verse-app/ui
+        run: npm ci
+
+      # sherpa-onnx-sys fetches its prebuilt static library from GitHub
+      # Releases. That is reachable from a runner, so unlike a development
+      # machine behind the Great Firewall this needs no staged archive — and the
+      # repository's `.cargo/config.toml` deliberately does not point at one,
+      # because setting SHERPA_ONNX_ARCHIVE_DIR to a directory without the
+      # archive in it is a hard error rather than a fallback.
+      - name: Build and attach
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # The Tauri project is not at the repository root.
+          projectPath: crates/verse-app
+          # Merged over the project's config, so the sidecar is declared for a
+          # release and not for anybody's first `cargo test`.
+          args: --config tauri.release.conf.json
+          tagName: ${{ github.ref_name }}
+          releaseName: Verse ${{ github.ref_name }}
+          releaseBody: |
+            Offline Chinese speech-to-text. Recognition runs locally; nothing is
+            uploaded and nothing connects out.
+
+            **These builds are not code-signed.** Windows will show a
+            SmartScreen warning. macOS is not built or supported.
+
+            ffmpeg is bundled — an LGPL build; see THIRD_PARTY_NOTICES.md for
+            which one and where its source is.
+
+            The model weights are not bundled. The first run offers to fetch the
+            default one, 228 MB.
+          releaseDraft: true
+          prerelease: false

@@ -131,15 +131,24 @@ reasoning are in `docs/llmwiki/tasks/llm-summary.md`.
 cargo build --release
 ```
 
-Two things are needed at runtime:
+**The installers bundle ffmpeg** — an **LGPL** build, placed beside the program.
+`PATH` is the fallback rather than the first choice, because the bundled copy is
+the one the release was tested with; set `VERSE_FFMPEG` to use yours instead,
+which is checked before either. (Running from source, you supply your own: one
+on `PATH`, or `VERSE_FFMPEG`.)
 
-- **ffmpeg** on `PATH` (or set `VERSE_FFMPEG` to it). Formats are read by
-  **invoking** ffmpeg, never by linking it — a crash or a leak inside it cannot
-  reach the main process.
-- **A model.** `verse model fetch sensevoice` gets the default, 228 MB, and the
-  VAD model with it. `verse model list` shows what is installed and how much
-  disk it uses, `verse model remove <id>` deletes one, `verse model clean` clears
-  half-finished downloads.
+Formats are read by **invoking** ffmpeg, never by linking it — a crash or a leak
+inside it cannot reach the main process. Which build is used, and where its
+source is, are in `THIRD_PARTY_NOTICES.md`.
+
+**A model** is also needed. `verse model fetch sensevoice` gets the default,
+228 MB, and the VAD model with it. `verse model list` shows what is installed
+and how much disk it uses, `verse model remove <id>` deletes one, `verse model
+clean` clears half-finished downloads.
+
+**Releases are built for Windows and Linux only.** macOS is neither built nor
+supported — the reasoning, which is about a platform with no LGPL ffmpeg build,
+is in `.github/workflows/release.yml`.
 
 The build downloads a prebuilt sherpa-onnx archive; behind a slow link, see
 `docs/llmwiki/design.md` §7.2 for staging it by hand.
@@ -248,8 +257,7 @@ Written here so they do not creep in:
 - **No weights in the installer** — Qwen3 is 1 GB and its ONNX weights come from
   a third-party upload; bundling it would make every user pay for a capability
   most will not use.
-- **Windows first** — the pipeline is portable; the window and the installer are
-  polished for Windows today.
+- **macOS** — not built, not supported. See the Install section.
 
 ## Development
 
