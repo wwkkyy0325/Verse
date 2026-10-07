@@ -802,7 +802,9 @@ fn run_parallel(
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
-    let per_worker_threads = (hardware.engine_threads() / workers).max(1);
+    // The same rule the service's pool uses, so the two cannot disagree about
+    // what a worker asks the machine for.
+    let per_worker_threads = verse_core::per_worker_threads(hardware.engine_threads(), workers);
 
     let next = AtomicUsize::new(0);
     let collected: Mutex<Vec<Option<report::FileResult>>> =

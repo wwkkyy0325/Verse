@@ -57,6 +57,26 @@ impl HardwareProfile {
         self.cores.saturating_sub(1).max(1)
     }
 
+    /// How many recognition workers this machine should run at once.
+    ///
+    /// `per_worker_bytes` is what one resident worker costs — its weights plus
+    /// [`RUNTIME_OVERHEAD_BYTES`]. Taken as a number rather than as a model,
+    /// because this crate knows nothing about models and does not want to.
+    ///
+    /// **The budget is an assumption, not a measurement.** Reading the machine's
+    /// RAM needs FFI and `unsafe` on every platform this project targets, and
+    /// the project has none. So the ceiling is [`MEMORY_BUDGET_BYTES`], reasoned
+    /// from the 8 GB machine floor `design.md` §3 states, and callers are
+    /// expected to report it rather than to trust it.
+    ///
+    /// Two bounds are not about memory. A worker needs at least one thread, so
+    /// the pool can never exceed [`HardwareProfile::engine_threads`]; and
+    /// [`MAX_WORKERS`] caps it however the budget reads, so the ceiling is a
+    /// number someone can audit rather than a consequence of multiplication.
+    pub fn pool_size(&self, per_worker_bytes: u64, budget_bytes: u64) -> usize {
+        pool_size(self.engine_threads(), per_worker_bytes, budget_bytes)
+    }
+
     /// Which tier this machine falls into.
     pub fn tier(&self) -> Tier {
         if !self.avx2 {
@@ -107,6 +127,63 @@ impl Tier {
         self.reason()
             .map(|reason| format!("Running in reduced mode because {reason}."))
     }
+}
+
+/// The most models this program will hold resident at once, whatever the
+/// arithmetic says.
+///
+/// A ceiling so the bound is a number someone can read rather than a
+/// consequence of multiplication. Set from the measured curve in
+/// `docs/llmwiki/tasks/adaptive-pool.md`, not from a guess — see that log for
+/// what the curve showed.
+pub const MAX_WORKERS: usize = 8;
+
+/// How much memory the workers may hold between them.
+///
+/// **A written assumption, not a probe.** Reading the machine's RAM needs FFI
+/// and `unsafe`, which this project does not have, so this is reasoned from the
+/// 8 GB floor `design.md` §3 commits to: a quarter of it, which leaves the rest
+/// for the operating system, the window's webview, and the audio being decoded.
+///
+/// It is reported to clients so it can be disagreed with rather than merely
+/// obeyed.
+pub const MEMORY_BUDGET_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// What one worker costs beyond its weights.
+///
+/// The model file is not the whole story: an initialised session, its scratch
+/// buffers and the decoded audio all scale with a worker. Measured, not assumed
+/// — see the "measure the curve" step of the task log, which sets this from the
+/// marginal resident bytes per worker against the weights it loaded.
+pub const RUNTIME_OVERHEAD_BYTES: u64 = 64 * 1024 * 1024;
+
+/// How many workers the machine and the budget between them allow.
+///
+/// Pure, and takes bytes rather than anything model-shaped, so it is testable
+/// with integers and so this crate stays ignorant of the catalogue.
+pub fn pool_size(engine_threads: usize, per_worker_bytes: u64, budget_bytes: u64) -> usize {
+    // A worker whose cost is unknown is one worker. Guessing a number here
+    // would be the silent failure this project keeps having to design against.
+    if per_worker_bytes == 0 {
+        return 1;
+    }
+
+    let affordable = (budget_bytes / per_worker_bytes).max(1) as usize;
+
+    // At least one thread each, so the pool can never ask for more CPU than the
+    // machine has been willing to give.
+    affordable
+        .min(engine_threads.max(1))
+        .clamp(1, MAX_WORKERS.max(1))
+}
+
+/// How many threads each of `workers` gets from a machine's budget.
+///
+/// Integer division, floored at one, because a worker with no threads is not a
+/// worker. Shared by the command line's `--jobs` and the service's pool so the
+/// two cannot disagree about what a worker asks for.
+pub fn per_worker_threads(engine_threads: usize, workers: usize) -> usize {
+    (engine_threads / workers.max(1)).max(1)
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -182,6 +259,74 @@ mod tests {
         assert_eq!(profile(true, 1).engine_threads(), 1);
         assert_eq!(profile(true, 4).engine_threads(), 3);
         assert_eq!(profile(true, 16).engine_threads(), 15);
+    }
+
+    #[test]
+    fn the_budget_binds_before_the_threads_do_on_a_big_machine() {
+        // The shape that matters: a worker costs what it costs, so the memory
+        // ceiling decides long before fifteen threads run out.
+        let machine = profile(true, 16);
+
+        // SenseVoice: 239.5 MB of weights plus the fixed overhead, which comes
+        // to 306.6 MB and so affords seven. **This number moves when
+        // `RUNTIME_OVERHEAD_BYTES` is set from the measured curve** — the
+        // assertion is here so that moving it is a decision rather than a
+        // surprise.
+        let small = 239_500_000 + RUNTIME_OVERHEAD_BYTES;
+        assert_eq!(machine.pool_size(small, MEMORY_BUDGET_BYTES), 7);
+
+        // Qwen3-ASR: 987 MB, so about two fit and no more. That the gigabyte
+        // model lands low is the intent, not a shortfall.
+        let large = 987_000_000 + RUNTIME_OVERHEAD_BYTES;
+        assert_eq!(machine.pool_size(large, MEMORY_BUDGET_BYTES), 2);
+    }
+
+    #[test]
+    fn a_small_machine_runs_fewer_workers_than_its_budget_allows() {
+        // The thread bound, which is the other half of the rule: every worker
+        // needs at least one thread, so a four-core machine cannot run eight of
+        // them however much memory there is.
+        let machine = profile(true, 4);
+        assert_eq!(machine.engine_threads(), 3);
+        assert_eq!(machine.pool_size(1, u64::MAX), 3);
+    }
+
+    #[test]
+    fn a_single_core_machine_still_gets_one_worker() {
+        let machine = profile(true, 1);
+        assert_eq!(machine.engine_threads(), 1);
+        assert_eq!(machine.pool_size(1, u64::MAX), 1);
+    }
+
+    #[test]
+    fn an_unknown_cost_is_one_worker_rather_than_a_guess() {
+        // Zero bytes means "not known". Treating it as free would multiply
+        // workers until something fell over, which is the silent failure this
+        // project has already been caught by twice.
+        assert_eq!(pool_size(16, 0, MEMORY_BUDGET_BYTES), 1);
+    }
+
+    #[test]
+    fn a_worker_that_costs_more_than_the_budget_is_still_one() {
+        // It cannot be improved, and refusing to run at all would be worse than
+        // running heavy. One, and the caller reports the cost.
+        assert_eq!(pool_size(16, MEMORY_BUDGET_BYTES * 4, MEMORY_BUDGET_BYTES), 1);
+    }
+
+    #[test]
+    fn the_ceiling_holds_however_large_the_budget_is() {
+        // The bound is a number someone can read, not a product.
+        assert_eq!(pool_size(usize::MAX, 1, u64::MAX), MAX_WORKERS);
+    }
+
+    #[test]
+    fn the_thread_budget_is_divided_and_never_reaches_zero() {
+        assert_eq!(per_worker_threads(15, 1), 15);
+        assert_eq!(per_worker_threads(15, 4), 3);
+        assert_eq!(per_worker_threads(15, 16), 1);
+        assert_eq!(per_worker_threads(1, 8), 1);
+        // A worker count of zero is nonsense; it must not divide by zero.
+        assert_eq!(per_worker_threads(15, 0), 15);
     }
 
     #[test]
