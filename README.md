@@ -120,8 +120,10 @@ cargo build --release
 `verse model list` 看已装了什么、占多少磁盘，`verse model remove <id>` 删掉一个，
 `verse model clean` 清掉下了一半的。
 
-**发布包只出 Windows 和 Linux。** macOS 不做也不支持——理由（一份没有 LGPL 构建的
-平台）写在 `.github/workflows/release.yml` 里。
+**发布包只出 Windows。** macOS 和 Linux 都不做也不支持，两边理由不同，都写在
+`.github/workflows/release.yml` 里：macOS 那边根本没有可用的 LGPL 版 ffmpeg；Linux
+那边是**构建其实过了**——挂掉的是一个在 Windows 路径上写的测试，不是程序——但多一个
+平台的打包配置和维护成本不值，所以按范围砍掉。
 
 构建会下载一份预编译的 sherpa-onnx，网络慢的话看 `docs/llmwiki/design.md` §7.2。
 
@@ -223,7 +225,7 @@ $ verse transcribe recordings/ -o out/ --json 2>/dev/null | jq -r '.results[].te
 - **总结** —— 试过了，见上面"试过，但没做"。
 - **权重不进安装包** —— Qwen3 是 1 GB，而且它的 ONNX 权重来自第三方上传；内置
   会让每个用户为一个大多数人用不到的能力付费。
-- **macOS** —— 不做，见上面安装一节。
+- **macOS 和 Linux** —— 不做，见上面安装一节。
 
 ## 开发
 

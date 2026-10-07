@@ -2328,3 +2328,78 @@ The maintainer judged it lower priority than the four above; it is written here
 so it is not quietly forgotten.
 
 385 tests, clippy clean, `svelte-check` 0 errors.
+
+---
+
+## 2026-10-07 — CI, a release path, and two platforms dropped for different reasons
+
+### CI, which immediately caught something
+
+`ci.yml` runs the tests, clippy and the frontend type check on every push. Its
+first run failed, and the failure is the most useful thing in this entry.
+
+```
+---- bridge::tests::only_the_file_name_is_shown_never_the_whole_path ----
+  left: "C:\Users\someone\录音\第三季度会议.m4a"
+ right: "第三季度会议.m4a"
+```
+
+The test is Windows-only; `file_label` is not. It hands `Path::file_name()` a
+path spelled with backslashes, which on Linux are ordinary characters, so the
+whole string comes back. The build compiled and 87 of the crate's 88 tests
+passed.
+
+### macOS, and then Linux
+
+macOS went first, for the reason already recorded: no LGPL ffmpeg build exists
+for it. Linux went next, and **the reason matters, because the obvious reading
+is the wrong one.** Linux did not fail to build. It was dropped as a scope
+decision after that one test, which is a test that needs a `#[cfg]`, not a
+program that needs a port.
+
+Both removals are written into the workflow rather than left in a commit
+message, because "Linux was dropped" and "Linux did not work" are different
+sentences and only one of them is true.
+
+### Three things in the release path that were wrong
+
+Found by reading the source of `tauri-action` and `tauri-bundler`, which is the
+only reason they were found at all — every one of them would have looked fine
+in a green run.
+
+**`bundle.targets` is intersected with the platform, silently.**
+`Settings::package_types()` keeps only the types the current platform supports,
+and `bundle_project` returns an empty vector when none survive. A
+`targets: ["msi", "nsis"]` config on Linux therefore **succeeds and produces
+nothing** — the worst shape a failure can take in this project. It does not
+bite on Windows, where the config is correct as written, and Linux is gone. It
+is recorded because the next platform added will meet it.
+
+**Manual dispatch would have created a release tagged `main`.** `github.ref_name`
+on a `workflow_dispatch` run from `main` is `main`, and that is what the action
+would have used as the tag — on the one trigger added specifically so a bundle
+could be tried without publishing. The tag input is now empty unless the ref is
+a tag.
+
+**`FFMPEG_VERSION: "8.0.1"` pinned nothing, and 8.0.1 does not exist.** It was
+declared, never referenced, and named in `THIRD_PARTY_NOTICES.md` as the version
+the licence belongs to — a notice that was wrong in a way nothing would have
+caught. BtbN publishes per-release branches inside `latest`; the fetch now names
+`ffmpeg-n8.1-latest-win64-lgpl-8.1.zip`, which is a version a licence can point
+at and still takes patches.
+
+### One thing removed with the platform
+
+`ffmpeg.rs`'s `../lib/Verse` candidate was the `.deb`/AppImage layout, reasoned
+from the bundle's structure and never seen on a machine — its own comment said
+so. Same removal as macOS's `../Resources`, one release later. `bundled()` went
+with it: with a single candidate left it was a wrapper around `beside()`, so
+`locate()` calls `beside()`.
+
+### Still true
+
+**Neither workflow has ever run.** The YAML parses, has no control characters,
+and that is the whole of what is known. **Nothing is code-signed**, so Windows
+shows a SmartScreen warning.
+
+388 tests, clippy clean, `svelte-check` 0 errors.

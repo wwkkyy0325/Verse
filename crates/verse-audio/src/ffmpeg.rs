@@ -48,7 +48,7 @@ pub fn locate() -> Result<PathBuf> {
         ));
     }
 
-    if let Some(shipped) = bundled(std::env::current_exe().ok().as_deref()) {
+    if let Some(shipped) = beside(std::env::current_exe().ok().as_deref()) {
         return Ok(shipped);
     }
 
@@ -73,38 +73,14 @@ pub fn locate() -> Result<PathBuf> {
     ))
 }
 
-/// A copy of ffmpeg that shipped with the program, wherever the installer put
-/// it.
+/// A copy of ffmpeg the installer placed beside the executable, if there is
+/// one.
 ///
-/// Three layouts, because a bundle is a different shape on each platform and
-/// the program cannot ask the bundler where it put things:
-///
-/// - **beside the executable** — a flat install, which is what the Windows
-///   installers produce and where the resources land;
-/// - **`../lib/Verse`** — the `.deb` and AppImage layout, with the binary in
-///   `bin/` and everything else under `lib/`.
-///
-/// **The Linux layout is reasoned from how the bundle is structured and has not
-/// been checked**, because this project has only ever been built on Windows. A
-/// copy that lands somewhere else is a copy that is not found, and the symptom
-/// is the ordinary "ffmpeg not found" message — honest, but not useful. The
-/// first release run is what will say.
-///
-/// macOS had a third entry here — `../Resources`, inside `Contents/` — and it
-/// was removed with macOS itself rather than left as a path nothing produces.
-fn bundled(exe: Option<&std::path::Path>) -> Option<PathBuf> {
-    let dir = exe?.parent()?;
-
-    let candidates = [
-        // The plain sibling first, through the function the test exercises.
-        beside(exe),
-        Some(dir.join("..").join("lib").join("Verse").join(program_name())),
-    ];
-
-    candidates.into_iter().flatten().find(|path| path.is_file())
-}
-
-/// A copy of ffmpeg sitting next to `exe`, if there is one.
+/// This is the only layout, and it is now the only one that can be: the Windows
+/// installers write their resources into the same directory as the program. The
+/// two platforms that put it elsewhere are gone — macOS used `../Resources`
+/// inside `Contents/`, Linux used `../lib/Verse` under the prefix — and each
+/// went with its platform rather than staying as a path nothing produces.
 ///
 /// Takes the executable's path rather than reading `current_exe` so a test can
 /// ask about a directory it made. Answers only a file that exists: a bundled

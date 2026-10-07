@@ -17,7 +17,7 @@ Two delivery modes:
 
 - Usable by someone with no technical background: install, run, drop a file, get text.
 - Chinese primary, English secondary.
-- Runs on modest hardware: 2013+ x86-64 (AVX2), Apple Silicon, ARMv8. No GPU required.
+- Runs on modest hardware: 2013+ x86-64 (AVX2). No GPU required. Windows only — see C7.
 - Small binary. Model weights are never compiled or embedded into the binary — they live as external files, whether fetched on first launch or shipped in the installer (see §10, open question 1).
 - No memory growth over long sessions.
 
@@ -38,6 +38,7 @@ Two delivery modes:
 | C4 | CPU-only, 2013+ baseline | Model must run at usable speed without GPU |
 | C5 | Must be obtainable from mainland China | Multi-source download, §6 |
 | C6 | Zero configuration for end users | Auto model fetch, hardware auto-adaptation. **Amended 2026-10-07:** the window now *shows* the engine and lets it be changed. What C6 protects is that the default path requires no decision, and it still does not — the engine is chosen before anybody looks and is shown as chosen. What changed is that a person who wants to choose can now see what the choice is, which `ui-design.md` §9's licence obligation required anyway. |
+| C7 | **Windows is the only platform built or supported** | Added 2026-10-07, with the first release workflow. macOS was dropped because no LGPL ffmpeg build exists for it and the alternatives are all GPL or a signed source build. Linux was dropped as a scope decision — **it built**, and the one CI failure was a test that spells a path with backslashes rather than anything in the program. The source stays portable where it costs nothing, but nothing checks that any more, and no `#[cfg(unix)]` arm is compiled by CI. Reasoning and both removals: `.github/workflows/release.yml`, `tasks/ci-release.md`. |
 
 ## 4. Architecture
 

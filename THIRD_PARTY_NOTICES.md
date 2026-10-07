@@ -138,19 +138,22 @@ require the user to install ffmpeg, which breaks the "install and run" goal the
 whole project is built around.
 
 The source is **BtbN/FFmpeg-Builds**, whose release listing publishes `-lgpl`
-archives for Windows and Linux — checked rather than assumed: `win64`,
-`winarm64`, `linux64` and `linuxarm64` all exist in both static and shared
-forms. The static one is fetched, so the bundle carries a single file.
+archives separately from its GPL ones — checked rather than assumed. The static
+Windows build is the one fetched, so the bundle carries a single file.
 
 **That project publishes nothing for macOS**, and the well-known macOS ffmpeg
 builds elsewhere are GPL. Rather than accept a GPL binary on one platform or
-build ffmpeg from source there, **macOS is not supported**. See the release
-workflow for the whole of that reasoning.
+build ffmpeg from source there, **macOS is not supported**. Linux is not
+supported either, but for an unrelated reason that is not about licences at all;
+both are written out in the release workflow.
 
 The licence text ships with the product, and the source offer it needs is:
 
 - ffmpeg itself — <https://ffmpeg.org/releases/> (the version is pinned in the
-  release workflow as `FFMPEG_VERSION`)
+  release workflow as `FFMPEG_ASSET`, and it names one of BtbN's per-release
+  branches, `n8.1`, rather than the rolling `master` build: it is the latest
+  8.1.x and it moves when 8.1 gets a patch, which is the point — a licence
+  notice can name a release line, and cannot name "latest")
 - how that binary was built — <https://github.com/BtbN/FFmpeg-Builds>
 
 The bundled file is a **sidecar**: `tauri.conf.json` declares it under

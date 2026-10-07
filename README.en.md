@@ -146,9 +146,12 @@ source is, are in `THIRD_PARTY_NOTICES.md`.
 and how much disk it uses, `verse model remove <id>` deletes one, `verse model
 clean` clears half-finished downloads.
 
-**Releases are built for Windows and Linux only.** macOS is neither built nor
-supported — the reasoning, which is about a platform with no LGPL ffmpeg build,
-is in `.github/workflows/release.yml`.
+**Releases are built for Windows only.** macOS and Linux are neither built nor
+supported, for two different reasons, both written out in
+`.github/workflows/release.yml`: macOS has no usable LGPL ffmpeg build at all,
+and Linux — where the build **did** succeed, the one failure being a test that
+writes a Windows path rather than anything in the program — was dropped as a
+scope decision. A second bundle layout is a second thing to keep working.
 
 The build downloads a prebuilt sherpa-onnx archive; behind a slow link, see
 `docs/llmwiki/design.md` §7.2 for staging it by hand.
@@ -257,7 +260,7 @@ Written here so they do not creep in:
 - **No weights in the installer** — Qwen3 is 1 GB and its ONNX weights come from
   a third-party upload; bundling it would make every user pay for a capability
   most will not use.
-- **macOS** — not built, not supported. See the Install section.
+- **macOS and Linux** — not built, not supported. See the Install section.
 
 ## Development
 
