@@ -10,4 +10,17 @@ description = "Model catalogue and multi-source downloader for Verse"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 ureq = "3.2.1"
+
+# The SHA-256 of a downloaded model file, computed from the same buffer that is
+# written to disk. Already in this workspace's build graph — `verse-store` uses
+# it for the cache key and ureq pulls it in — so this is a manifest line rather
+# than a crate.
+sha2 = "0.10"
+
+# How much room is left where the models are going, so a 987 MB download against
+# 200 MB free says so before it starts rather than failing part way through.
+# Already in this workspace's build graph — the CLI uses it for the memory probe
+# — so this is a manifest line and a feature. `disk` is the part that answers
+# this question; `system` is what it builds on.
+sysinfo = { version = "0.39", default-features = false, features = ["system", "disk"] }
 verse-core.workspace = true

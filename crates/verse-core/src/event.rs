@@ -31,7 +31,13 @@ pub enum Event {
     JobProgress {
         id: JobId,
         position: Duration,
-        fraction: f32,
+        /// How far through the file, or `None` when its length is not known.
+        ///
+        /// `None` rather than zero, because a bar sitting at zero and a bar
+        /// that cannot know where it is look the same and mean different
+        /// things. Streams and containers that report no duration land here,
+        /// and so does anything that has not been measured yet.
+        fraction: Option<f32>,
     },
     JobFinished {
         id: JobId,

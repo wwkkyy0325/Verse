@@ -68,10 +68,12 @@ Every route needs `Authorization: Bearer <token>`; a request carrying an
 `state` is `done`, `failed` or `cancelled`; then `result` is the same
 `FileResult` the command line's `--json` emits, so one parser reads both.
 
-`progress` carries `segments` and `positionMs` and **no percentage** — the
-decoder reports no total length, so a ratio would be invented. `elapsedMs` is
-the job's own time and `queuedMs` the wait; the job that loads the model is the
-slow one.
+`progress` carries `segments`, `positionMs` and `fraction` — how far through the
+file, or **`null` when the input declares no length**. `null` is not zero: zero
+means "at the beginning" and null means "no number is known", and a client that
+renders them the same way will show a stalled bar for a stream that is fine.
+`elapsedMs` is the job's own time and `queuedMs` the wait; the job that loads
+the model is the slow one.
 
 Several jobs run at once, one per worker. The pool is sized from the machine
 and the model unless `--workers` says otherwise: the memory budget is a quarter

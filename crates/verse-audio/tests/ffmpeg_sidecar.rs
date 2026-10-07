@@ -176,3 +176,37 @@ fn converts_between_formats() {
     let _ = std::fs::remove_file(&src);
     let _ = std::fs::remove_file(&mp3);
 }
+
+/// The duration is read by the drain thread, so it is not there the instant
+/// `open` returns — polling is what the pipeline's own caller does too.
+fn wait_for_total(decoder: &FfmpegDecoder) -> Option<std::time::Duration> {
+    for _ in 0..250 {
+        if let Some(total) = decoder.total() {
+            return Some(total);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    None
+}
+
+#[test]
+fn the_decoder_reports_how_long_the_file_is() {
+    // The parser has unit tests over a copied banner, which proves the parsing
+    // and not the plumbing. This is the other half: that a real ffmpeg, invoked
+    // the way the pipeline invokes it, actually puts a duration where the drain
+    // thread can find it. Without it the parser could be perfect and the
+    // feature still absent.
+    let Some(path) = make_source() else {
+        return;
+    };
+
+    let decoder = FfmpegDecoder::open(&path, AudioFormat::TARGET).expect("open");
+
+    let total = wait_for_total(&decoder).expect("ffmpeg declares a length for a plain wav");
+    let expected = std::time::Duration::from_secs(SECONDS as u64);
+
+    assert!(
+        total.abs_diff(expected) < std::time::Duration::from_millis(50),
+        "expected about {expected:?}, got {total:?}"
+    );
+}

@@ -1,0 +1,13 @@
+# A measurement, not a component. Its own workspace so that none of candle's
+# build time lands on `cargo test --workspace` until the numbers say it should.
+[workspace]
+
+[package]
+name = "llm-summary-spike"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+candle-core = "0.8"
+candle-transformers = "0.8"
+tokenizers = "0.20"

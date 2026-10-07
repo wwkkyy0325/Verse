@@ -1,0 +1,7 @@
+# The build, and the models it measures with.
+#
+# Both are large: 1.7 GB of cargo output and half a gigabyte of weights. The
+# root `.gitignore` covers `/models` at the top of the repository and this
+# directory is not that one.
+/target
+/models

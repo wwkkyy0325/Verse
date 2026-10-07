@@ -17,8 +17,8 @@ pub mod router;
 pub mod traits;
 
 pub use domain::{
-    AudioChunk, AudioFormat, JobId, ModelId, ModelState, Segment, SegmentId, Transcript,
-    TranscriptDelta,
+    looks_like_audio, AudioChunk, AudioFormat, JobId, ModelId, ModelState, Segment, SegmentId,
+    Transcript, TranscriptDelta, AUDIO_EXTENSIONS,
 };
 pub use error::{Error, ErrorInfo, ErrorKind, Result};
 pub use event::{Event, EventBus, JobKind, Subscription};
@@ -92,7 +92,7 @@ mod tests {
                 ctx.events.publish(Event::JobProgress {
                     id: job.id,
                     position: Duration::from_millis(u64::from(step) * 250),
-                    fraction: (step + 1) as f32 / 4.0,
+                    fraction: Some((step + 1) as f32 / 4.0),
                 });
             }
             ctx.events.publish(Event::TranscriptFinal {

@@ -27,6 +27,7 @@ mod bridge;
 #[allow(dead_code)]
 mod state;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -36,6 +37,9 @@ use verse_core::{CancelToken, ExportFormat, HardwareProfile, Weakness};
 use verse_model::{Catalog, Downloader, DownloadState};
 
 use bridge::{App, DownloadView, Update, UPDATE};
+
+#[cfg(debug_assertions)]
+mod demo;
 use state::Effect;
 
 /// What the interface is told about the machine it is running on.
@@ -117,15 +121,16 @@ fn window_notice(weakness: Weakness) -> String {
     format!("正在以精简模式运行：{reason}。转写仍然可用，只是会更慢。")
 }
 
-/// What the window should be showing right now.
+/// Everything the window needs to draw itself.
 ///
-/// Called once when the frontend mounts. Everything after that arrives as an
-/// update on [`UPDATE`].
+/// Called once when the frontend mounts. Everything after that arrives on
+/// [`UPDATE`] — as an increment where there is one, and as a whole snapshot
+/// where there is not.
 #[tauri::command]
-fn current_screen(app: AppHandle) -> bridge::ScreenView {
+fn current_state(app: AppHandle) -> bridge::StateView {
     let app_state = app.state::<App>();
     let state = app_state.state.lock().expect("state mutex poisoned");
-    bridge::view_of(state.screen())
+    bridge::StateView::of(&state)
 }
 
 /// Begin transcribing a file.
@@ -163,17 +168,459 @@ fn transcribe(app: AppHandle, path: String) -> Result<(), String> {
         state.file_chosen(input, ready)
     };
 
-    // A new job's transcript must not be appended to the last one's.
+    // A new job's transcript must not be appended to the last one's. Only when
+    // one is actually starting: a file that was queued behind another has no
+    // transcript of its own yet, and clearing would wipe the one on screen.
     if matches!(effect, Effect::Transcribe(_)) {
         let _ = app.emit(UPDATE, Update::Cleared);
     }
-    bridge::push_screen(&app);
+    bridge::push_state(&app);
 
     if let Effect::Transcribe(input) = effect {
         bridge::start(&app, input, models);
     }
 
     Ok(())
+}
+
+/// Adds up a whole model's download from the downloader's one-file-at-a-time
+/// reports.
+///
+/// Pulled out of the callback so it can be tested. Which files count as done is
+/// decided by noticing the name change, and an off-by-one there shows up as a
+/// bar that stalls or jumps rather than as anything that fails.
+struct ModelProgress {
+    /// The whole model's size, or `None` if any file's is unknown — a total
+    /// missing a part of itself is a worse answer than no total.
+    total: Option<u64>,
+    /// The latest figure seen for each file, by name.
+    ///
+    /// Replaced rather than added to, which is what makes this work for files
+    /// fetched several at a time: a retry that restarts one file from zero
+    /// corrects itself, and three files in flight need no special case. The
+    /// previous version decided a file was finished by noticing the name
+    /// change, which is only true when they arrive one at a time.
+    ///
+    /// Seeded with the files that are already here, so a resumed download
+    /// starts at what is on disk rather than at zero.
+    seen: HashMap<String, u64>,
+}
+
+impl ModelProgress {
+    fn of(spec: &verse_model::ModelSpec, root: &std::path::Path) -> Self {
+        let dir = verse_model::Downloader::directory_for(spec, root);
+        let mut seen = HashMap::new();
+
+        for file in &spec.files {
+            if verse_model::file_is_complete(file, &dir) {
+                if let Some(size) = file.size {
+                    seen.insert(file.local.clone(), size);
+                }
+            }
+        }
+
+        Self {
+            total: spec.files.iter().map(|file| file.size).sum(),
+            seen,
+        }
+    }
+
+    /// Bytes received for the whole model, when its size is known.
+    fn observe(&mut self, state: &verse_model::DownloadState) -> Option<u64> {
+        if let verse_model::DownloadState::Fetching { file, received, .. } = state {
+            self.seen.insert(file.clone(), *received);
+        }
+
+        self.total?;
+        Some(self.seen.values().sum())
+    }
+}
+
+/// The engines this build can run, with what a person needs to choose one./// The engines this build can run, with what a person needs to choose one.
+///
+/// Filtered to ids the registry can actually load. A catalogue entry with no
+/// engine behind it would be a row that can never run — and the two lists are
+/// maintained separately, so the filter is what keeps them honest rather than
+/// a comment asking people to keep them in step.
+#[tauri::command]
+fn models() -> Result<Vec<bridge::ModelChoice>, String> {
+    let root = models_dir();
+
+    let catalog = Catalog::load_or_embedded(&root.join("catalog.json"))
+        .map_err(|e| format!("读不了模型清单：{e}"))?;
+
+    let mut registry = verse_core::Registry::new();
+    verse_asr::register_builtin_engines(&mut registry);
+
+    Ok(catalog
+        .models
+        .iter()
+        .filter(|spec| registry.engine(&spec.id).is_some())
+        .map(|spec| bridge::ModelChoice {
+            id: spec.id.clone(),
+            name: spec.display_name.clone(),
+            description: spec.description.clone(),
+            present: Downloader::is_present(spec, &root),
+            bytes: spec.files.iter().filter_map(|file| file.size).sum(),
+            default: spec.id == state::DEFAULT_MODEL,
+        })
+        .collect())
+}
+
+/// Where the record of finished transcripts lives.
+fn history_path() -> PathBuf {
+    verse_store::data_dir(&verse_store::Roots::from_env()).join("history.json")
+}
+
+/// The argument `explorer` needs to open a folder with this file selected.
+///
+/// Quoted here and not by `Command::arg`, which quotes the whole argument
+/// rather than the path inside it — see the note at the call site.
+///
+/// A function rather than an inline `format!` so the shape is visible and
+/// testable: the quotes are load-bearing and are exactly the sort of thing a
+/// tidy-up removes.
+fn explorer_select_argument(path: &Path) -> String {
+    format!("/select,\"{}\"", path.display())
+}
+
+/// Show a file in the platform's file manager.
+///
+/// The program knows the path and the next thing a person wants after reading a
+/// transcript is usually the transcript *as a file*. Spawning the file manager
+/// is how every desktop does it; doing it with `std::process` rather than a
+/// plugin keeps the dependency list where it is.
+///
+/// **The exit status is not checked.** `explorer.exe` returns non-zero when it
+/// succeeds, so treating that as failure would report a broken action every
+/// time it worked. What can fail is the file being gone, which is checked
+/// first.
+fn reveal_in_folder(path: &Path) -> Result<(), String> {
+    if !path.is_file() {
+        return Err(format!("找不到 {}。", path.display()));
+    }
+
+    #[cfg(target_os = "windows")]
+    let spawned = {
+        use std::os::windows::process::CommandExt as _;
+
+        let mut command = std::process::Command::new("explorer");
+        // Raw rather than `arg`, and this is the whole of a bug that had it
+        // opening the folder *above* the right one.
+        //
+        // Rust quotes any argument containing a space by wrapping the whole
+        // thing: `/select,C: b\c.srt` becomes `"/select,C: b\c.srt"`. The
+        // quote lands before `/select` instead of around the path, explorer
+        // stops the path at the space, and what it is left with is a file that
+        // is not there — so it opens the enclosing folder and the file is not
+        // highlighted. Every recording whose name has a space in it.
+        command.raw_arg(explorer_select_argument(path));
+        command.spawn()
+    };
+
+    #[cfg(target_os = "macos")]
+    let spawned = std::process::Command::new("open")
+        .arg("-R")
+        .arg(path)
+        .spawn();
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let spawned = std::process::Command::new("xdg-open")
+        // No portable "select this file": the nearest thing is the folder.
+        .arg(path.parent().unwrap_or(path))
+        .spawn();
+
+    spawned
+        .map(|_| ())
+        .map_err(|e| format!("打不开文件管理器：{e}"))
+}
+
+/// Take a file out of the list, leaving its transcript where it is.
+#[tauri::command]
+fn forget(app: AppHandle, index: usize) {
+    let input = {
+        let app_state = app.state::<App>();
+        let mut state = app_state.state.lock().expect("state mutex poisoned");
+        state.forget(index)
+    };
+
+    // Forgetting the row without forgetting the record would put it back on the
+    // next launch, which is not what "remove this" means.
+    if let Some(input) = input {
+        let path = history_path();
+        let mut history = verse_store::History::load(&path);
+        if history.forget(&input) {
+            let _ = history.save(&path);
+        }
+    }
+
+    bridge::push_state(&app);
+}
+
+/// Show the transcript being displayed in the platform's file manager.
+#[tauri::command]
+fn reveal(app: AppHandle) -> Result<(), String> {
+    let path = {
+        let app_state = app.state::<App>();
+        let state = app_state.state.lock().expect("state mutex poisoned");
+        state
+            .finished()
+            .and_then(|done| done.exported.clone())
+            .ok_or_else(|| "这个转写还没有写到文件里。".to_string())?
+    };
+
+    reveal_in_folder(&path)
+}
+
+/// Delete one row's transcript, from the disk as well as the list.
+///
+/// Takes the row rather than the selection, because the window asks from the
+/// list: a ✕ on a row offers to remove it or to delete its file, and neither
+/// should depend on what happens to be on screen at the time. If the row being
+/// deleted *is* the one on screen, removing it blanks the pane, which is what
+/// `forget` does with the selection.
+///
+/// The irreversible half of taking a file out of the list, and separate from it
+/// for that reason. The window asks which of the two is meant; nothing here
+/// asks again, because a command that pops its own confirmation cannot be
+/// driven by a test.
+#[tauri::command]
+fn delete_result(app: AppHandle, index: usize) -> Result<(), String> {
+    let (path, input) = {
+        let app_state = app.state::<App>();
+        let state = app_state.state.lock().expect("state mutex poisoned");
+
+        let entry = state
+            .files()
+            .get(index)
+            .ok_or_else(|| "列表里没有这一行。".to_string())?;
+
+        let state::Screen::Done(done) = &entry.screen else {
+            return Err("这个文件还没有转写结果，只能从列表里移出。".to_string());
+        };
+
+        let path = done
+            .exported
+            .clone()
+            .ok_or_else(|| "这个转写还没有写到文件里。".to_string())?;
+
+        (path, entry.input.clone())
+    };
+
+    std::fs::remove_file(&path).map_err(|e| format!("删不掉 {}：{e}", path.display()))?;
+
+    {
+        let app_state = app.state::<App>();
+        let mut state = app_state.state.lock().expect("state mutex poisoned");
+        state.forget(index);
+    }
+
+    let record = history_path();
+    let mut history = verse_store::History::load(&record);
+    if history.forget(&input) {
+        let _ = history.save(&record);
+    }
+
+    bridge::push_state(&app);
+    Ok(())
+}
+
+/// Put the previous run's finished transcripts back into the list.
+///
+/// Runs before the window exists, so the list is already populated when the
+/// frontend asks for it and there is no moment where a restored row appears
+/// after the drop target has been drawn.
+///
+/// A row is only restored when its result can actually be read: the entry is a
+/// pointer to a file, and one that has been deleted or emptied since is not
+/// history. Those are pruned from the record as well, so the next launch does
+/// not read them again.
+fn restore_history(app: &AppHandle) {
+    let path = history_path();
+
+    let mut history = verse_store::History::load(&path);
+    let before = history.entries().len();
+    history.prune();
+    if history.entries().len() != before {
+        let _ = history.save(&path);
+    }
+
+    let restored: Vec<state::Restored> = history
+        .entries()
+        .iter()
+        .filter_map(|past| {
+            let text = std::fs::read_to_string(&past.output).ok()?;
+            // A file that is not subtitles is skipped rather than shown as an
+            // empty transcript: `None` means "no cue in it", and an empty row
+            // that opens to nothing is worse than no row.
+            let transcript = verse_core::export::parse_srt(&text)?;
+
+            Some(state::Restored {
+                input: past.input.clone(),
+                engine: past.engine.clone(),
+                output: past.output.clone(),
+                transcript,
+            })
+        })
+        .collect();
+
+    let app_state = app.state::<App>();
+    app_state
+        .state
+        .lock()
+        .expect("state mutex poisoned")
+        .restore(restored);
+}
+
+/// Whether the demonstration can be run at all.
+///
+/// Asked on mount so the window can offer it *without* running it. It used to
+/// run itself whenever `VERSE_DEMO` was set, which meant a shell that had that
+/// variable exported — as the development instructions do — got a demo job on
+/// every launch, and looked like the program doing something on its own.
+#[cfg(debug_assertions)]
+#[tauri::command]
+fn demo_available() -> bool {
+    demo::enabled()
+}
+
+#[cfg(not(debug_assertions))]
+#[tauri::command]
+fn demo_available() -> bool {
+    false
+}
+
+/// Put the window through a job it did not have to wait for.
+///
+/// Two functions with one name rather than one function with a `#[cfg]` block:
+/// each configuration compiles exactly one of them, so a release build has no
+/// code that can publish a job at all. That is a stronger statement than
+/// "unreachable", and it is the one that matters — this is a development tool
+/// sitting in the same binary a person installs.
+#[cfg(debug_assertions)]
+#[tauri::command]
+fn demo_progress(app: AppHandle) -> Result<bool, String> {
+    demo::run(app)
+}
+
+#[cfg(not(debug_assertions))]
+#[tauri::command]
+fn demo_progress(_app: AppHandle) -> Result<bool, String> {
+    // Not an error: a release build not having a development tool is the
+    // correct state of affairs, and a window that complained about it would be
+    // complaining about working as intended.
+    Ok(false)
+}
+
+/// Look at what is about to be handed over, before anything starts.
+///
+/// The window asks this on every drop and every selection. The rule lives here
+/// rather than in the frontend so there is one list of what this program reads
+/// — the same one `verse-core` gives the command line for expanding a folder.
+#[tauri::command]
+fn check_files(paths: Vec<String>) -> bridge::CheckResult {
+    let mut usable = Vec::new();
+    let mut refused = Vec::new();
+
+    for path in paths {
+        let path = PathBuf::from(path);
+        match bridge::refusal_for(&path) {
+            None => usable.push(path.to_string_lossy().into_owned()),
+            Some(refusal) => refused.push(refusal),
+        }
+    }
+
+    bridge::CheckResult {
+        usable,
+        refused,
+        accepted: verse_core::AUDIO_EXTENSIONS
+            .iter()
+            .map(|extension| (*extension).to_string())
+            .collect(),
+    }
+}
+
+/// Run the file being shown again, after a failure.
+#[tauri::command]
+fn retry(app: AppHandle) -> Result<(), String> {
+    let models = models_dir();
+
+    let effect = {
+        let app_state = app.state::<App>();
+        let mut state = app_state.state.lock().expect("state mutex poisoned");
+        state.retry()
+    };
+
+    if matches!(effect, Effect::Transcribe(_)) {
+        let _ = app.emit(UPDATE, Update::Cleared);
+        bridge::push_state(&app);
+    }
+
+    if let Effect::Transcribe(input) = effect {
+        bridge::start(&app, input, models);
+    }
+
+    Ok(())
+}
+
+/// Show a different file from the list.
+#[tauri::command]
+fn select(app: AppHandle, index: usize) {
+    {
+        let app_state = app.state::<App>();
+        let mut state = app_state.state.lock().expect("state mutex poisoned");
+        state.select(index);
+    }
+    bridge::push_state(&app);
+}
+
+/// Choose an engine.
+///
+/// Refused while a job is running — the state decides that — and refused for a
+/// model that is not on disk. The second one is not a formality: choosing an
+/// engine that cannot run leaves the window in a state where the next file has
+/// no recogniser, and the row already says 需要下载 with the button to fix it.
+#[tauri::command]
+fn select_model(app: AppHandle, id: String) -> Result<(), String> {
+    let models_root = models_dir();
+
+    let catalog = Catalog::load_or_embedded(&models_root.join("catalog.json"))
+        .map_err(|e| e.message().to_string())?;
+    let spec = catalog
+        .find(&id)
+        .ok_or_else(|| format!("模型清单里没有 {id} 这个模型。"))?;
+
+    if !Downloader::is_present(spec, &models_root) {
+        return Err(format!("{id} 还没有下载完，先在左边的卡片里下载。"));
+    }
+
+    let (changed, current) = {
+        let app_state = app.state::<App>();
+        let mut state = app_state.state.lock().expect("state mutex poisoned");
+        let changed = state.set_model(id.clone()) == Effect::EngineChanged;
+        (changed, state.model().to_string())
+    };
+
+    if changed {
+        // The loaded model belongs to the engine that was just replaced.
+        // Without this it stays resident — up to a gigabyte — until some later
+        // job happens to want a different one, or until the idle sweep
+        // notices. Safe to call here for the very reason the state refused the
+        // change while a job was running: nothing is holding the model.
+        let app_state = app.state::<App>();
+        app_state.keeper.release();
+        bridge::push_state(&app);
+        return Ok(());
+    }
+
+    if current == id {
+        // Already the chosen engine; nothing to do and nothing to report.
+        Ok(())
+    } else {
+        // The state refused, which it only does while a job holds the model.
+        // Saying so is better than a picker that silently does not take.
+        Err("正在转写，先等它结束或者取消，再换模型。".to_string())
+    }
 }
 
 /// Ask the running job to stop.
@@ -188,7 +635,7 @@ fn cancel(app: AppHandle) {
         let mut state = app_state.state.lock().expect("state mutex poisoned");
         state.cancel();
     }
-    bridge::push_screen(&app);
+    bridge::push_state(&app);
 }
 
 /// Write the finished transcript out.
@@ -211,15 +658,18 @@ fn export(app: AppHandle, path: String) -> Result<(), String> {
         .and_then(ExportFormat::from_extension)
         .ok_or_else(|| format!("看不懂这个扩展名：{path}，请用 .srt 或 .txt 结尾。"))?;
 
-    let (rendered, written) = {
+    let (index, rendered, written) = {
         let app_state = app.state::<App>();
         let state = app_state.state.lock().expect("state mutex poisoned");
 
+        let index = state
+            .selected()
+            .ok_or_else(|| "现在没有可以导出的转写结果。".to_string())?;
         let done = state
             .finished()
             .ok_or_else(|| "现在没有可以导出的转写结果。".to_string())?;
 
-        (format.render(&done.transcript), destination.clone())
+        (index, format.render(&done.transcript), destination.clone())
     };
 
     std::fs::write(&written, rendered)
@@ -228,49 +678,52 @@ fn export(app: AppHandle, path: String) -> Result<(), String> {
     {
         let app_state = app.state::<App>();
         let mut state = app_state.state.lock().expect("state mutex poisoned");
-        state.note_exported(written);
+        state.note_exported(index, written);
     }
-    bridge::push_screen(&app);
+    bridge::push_state(&app);
 
     Ok(())
 }
 
-/// Fetch the model the waiting file needs.
+/// Fetch a model, from the panel or from the file that is waiting for it.
 ///
-/// Returns as soon as the download is under way. Progress arrives on
-/// [`UPDATE`], and when the model lands the transcription that was waiting
-/// starts on its own — which is what the `NeedsModel` screen has been
-/// carrying the file path for since it was written.
+/// One command for both, because they are the same job: download what the
+/// catalogue lists under this id. The difference is only what happens
+/// afterwards — a file waiting on this exact model starts on its own, which is
+/// what the `NeedsModel` screen has been carrying the path for since it was
+/// written.
 #[tauri::command]
-fn fetch_model(app: AppHandle) -> Result<(), String> {
+fn fetch_model(app: AppHandle, model: String) -> Result<(), String> {
     let models_root = models_dir();
-
-    let effect = {
-        let app_state = app.state::<App>();
-        let mut state = app_state.state.lock().expect("state mutex poisoned");
-        state.fetch_model()
-    };
-
-    let Effect::FetchModel { model, .. } = effect else {
-        return Err("现在不需要下载模型。".to_string());
-    };
 
     let catalog = Catalog::load_or_embedded(&models_root.join("catalog.json"))
         .map_err(|e| e.message().to_string())?;
-    if catalog.find(&model).is_none() {
-        return Err(format!("模型目录里没有 {model} 这个模型。"));
+    let Some(spec) = catalog.find(&model) else {
+        return Err(format!("模型清单里没有 {model} 这个模型。"));
+    };
+
+    if Downloader::is_present(spec, &models_root) {
+        return Err(format!("{model} 已经在本机了。"));
     }
 
-    std::thread::spawn(move || {
-        let Some(spec) = catalog.find(&model) else {
-            return;
-        };
+    let reporting = app.clone();
+    let wanted = model.clone();
+    let spec = spec.clone();
 
-        let reporting = app.clone();
+    std::thread::spawn(move || {
+        // The whole model, not the file in flight. The downloader reports one
+        // file at a time and knows nothing about the others, so its own figures
+        // fill up once per file — Qwen3-ASR showed "44 MB" and looked finished
+        // while it was on the first of five.
+        let mut progress = ModelProgress::of(&spec, &models_root);
+        let model_total = progress.total;
+
         let outcome = Downloader::new().fetch(
-            spec,
+            &spec,
             &models_root,
             move |state| {
+                let model_received = progress.observe(state);
+
                 let app_state = reporting.state::<App>();
                 app_state
                     .state
@@ -278,18 +731,66 @@ fn fetch_model(app: AppHandle) -> Result<(), String> {
                     .expect("state mutex poisoned")
                     .download_changed(state.clone());
 
+                let download = match DownloadView::from(state) {
+                    DownloadView::Fetching {
+                        file,
+                        received_bytes,
+                        total_bytes,
+                        ..
+                    } => DownloadView::Fetching {
+                        file,
+                        received_bytes,
+                        total_bytes,
+                        model_received_bytes: model_received,
+                        model_total_bytes: model_total,
+                    },
+                    other => other,
+                };
+
                 let _ = reporting.emit(
                     UPDATE,
                     Update::Download {
-                        download: DownloadView::from(state),
+                        model: wanted.clone(),
+                        download,
                     },
                 );
             },
             &CancelToken::new(),
         );
 
-        if matches!(outcome, Ok(DownloadState::Ready)) {
-            start_waiting_job(&app);
+        if !matches!(outcome, Ok(DownloadState::Ready)) {
+            return;
+        }
+
+        // Only the file that was waiting for *this* model. The panel can fetch
+        // anything, and starting a job whose model is still missing would turn
+        // a working download into a failure about something else.
+        let start = {
+            let app_state = app.state::<App>();
+            let mut state = app_state.state.lock().expect("state mutex poisoned");
+            if state.waiting_for(&model) {
+                matches!(state.model_ready(), Effect::Transcribe(_))
+            } else {
+                false
+            }
+        };
+
+        // The panel's card has to stop saying 需要下载, whether or not a job
+        // was waiting on it.
+        bridge::push_state(&app);
+
+        if start {
+            let input = {
+                let app_state = app.state::<App>();
+                let state = app_state.state.lock().expect("state mutex poisoned");
+                match state.screen() {
+                    crate::state::Screen::Working(working) => Some(working.input.clone()),
+                    _ => None,
+                }
+            };
+            if let Some(input) = input {
+                bridge::start(&app, input, models_root);
+            }
         }
     });
 
@@ -383,7 +884,7 @@ fn start_waiting_job(app: &AppHandle) {
         state.model_ready()
     };
 
-    bridge::push_screen(app);
+    bridge::push_state(app);
 
     if let Effect::Transcribe(input) = effect {
         bridge::start(app, input, models_dir());
@@ -404,7 +905,7 @@ fn reset(app: AppHandle) {
         let mut state = app_state.state.lock().expect("state mutex poisoned");
         state.reset();
     }
-    bridge::push_screen(&app);
+    bridge::push_state(&app);
 }
 
 /// Start the application.
@@ -415,6 +916,7 @@ pub fn run() {
             app.manage(App::new());
 
             let handle = app.handle().clone();
+            restore_history(&handle);
             let bus = {
                 let state = handle.state::<App>();
                 state.bus.clone()
@@ -427,7 +929,17 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             hardware,
-            current_screen,
+            current_state,
+            demo_progress,
+            demo_available,
+            models,
+            select,
+            retry,
+            check_files,
+            forget,
+            reveal,
+            delete_result,
+            select_model,
             transcribe,
             cancel,
             export,
@@ -443,6 +955,8 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
+    use bridge::refusal_for;
     use verse_model::{ModelFile, ModelSpec};
 
     fn scratch(name: &str) -> PathBuf {
@@ -524,20 +1038,296 @@ mod tests {
     fn spec() -> ModelSpec {
         ModelSpec {
             id: "sensevoice".to_string(),
+            description: None,
             display_name: "SenseVoice".to_string(),
             files: vec![
                 ModelFile {
                     remote: "model.int8.onnx".to_string(),
                     local: "model.int8.onnx".to_string(),
                     size: None,
+                    sha256: None,
                 },
                 ModelFile {
                     remote: "vocab.json".to_string(),
                     local: "tokenizer/vocab.json".to_string(),
                     size: None,
+                    sha256: None,
                 },
             ],
             mirrors: Vec::new(),
+        }
+    }
+
+    /// A model of two files with known sizes, for the progress arithmetic.
+    fn two_file_spec() -> ModelSpec {
+        ModelSpec {
+            id: "sensevoice".to_string(),
+            display_name: "SenseVoice-Small".to_string(),
+            description: None,
+            files: vec![
+                ModelFile {
+                    remote: "a.onnx".to_string(),
+                    local: "a.onnx".to_string(),
+                    size: Some(100),
+                    sha256: None,
+                },
+                ModelFile {
+                    remote: "b.onnx".to_string(),
+                    local: "b.onnx".to_string(),
+                    size: Some(50),
+                    sha256: None,
+                },
+            ],
+            mirrors: Vec::new(),
+        }
+    }
+
+    fn fetching(file: &str, received: u64) -> verse_model::DownloadState {
+        verse_model::DownloadState::Fetching {
+            mirror: "hf-mirror".to_string(),
+            file: file.to_string(),
+            received,
+            total: None,
+        }
+    }
+
+    #[test]
+    fn the_progress_counts_the_whole_model_and_not_the_file_in_flight() {
+        // The bug this pins: the downloader's own figures are per file, so the
+        // window showed "44 MB" and looked finished while Qwen3-ASR was on the
+        // first of its five files.
+        let mut progress = ModelProgress::of(&two_file_spec(), Path::new("nonexistent-root"));
+
+        assert_eq!(progress.total, Some(150));
+        assert_eq!(progress.observe(&fetching("a.onnx", 40)), Some(40));
+        assert_eq!(progress.observe(&fetching("a.onnx", 100)), Some(100));
+
+        // Moving to the second file keeps what the first one put in.
+        assert_eq!(progress.observe(&fetching("b.onnx", 1)), Some(101));
+        assert_eq!(progress.observe(&fetching("b.onnx", 50)), Some(150));
+    }
+
+    #[test]
+    fn a_retried_file_is_not_counted_twice() {
+        // A mirror that fails and is retried re-reports the same name from
+        // zero. Counting the name change alone would have added the first
+        // attempt to the total and left the bar past its own end.
+        let mut progress = ModelProgress::of(&two_file_spec(), Path::new("nonexistent-root"));
+
+        progress.observe(&fetching("a.onnx", 80));
+        // The same file, from the start, on another mirror.
+        assert_eq!(progress.observe(&fetching("a.onnx", 5)), Some(5));
+    }
+
+    #[test]
+    fn a_model_with_an_unknown_size_reports_no_total_rather_than_a_wrong_one() {
+        let mut spec = two_file_spec();
+        spec.files[1].size = None;
+
+        let mut progress = ModelProgress::of(&spec, Path::new("nonexistent-root"));
+
+        assert_eq!(progress.total, None, "a partial total is not a total");
+        assert_eq!(progress.observe(&fetching("a.onnx", 40)), None);
+    }
+
+    #[test]
+    fn the_explorer_argument_quotes_the_path_and_not_the_switch() {
+        // Properties rather than an expected string, which would be nothing but
+        // quotes and separators and would amount to asserting that the test was
+        // typed correctly.
+        //
+        // `Command::arg` puts one quote around the whole argument —
+        // `/select,C:/a b/c.srt` becomes `"/select,C:/a b/c.srt"` — and explorer
+        // then stops the path at the space, finds no such file, and opens the
+        // folder above the right one.
+        //
+        // Forward slashes because a path is a path either way on Windows and
+        // this file has enough escaping in it.
+        let argument = explorer_select_argument(Path::new("C:/a b/c.srt"));
+
+        assert!(
+            argument.starts_with("/select,"),
+            "the switch comes first and unquoted: {argument}"
+        );
+        assert!(
+            argument.ends_with('"'),
+            "and the path is closed at its end: {argument}"
+        );
+        assert!(
+            argument.contains("C:/a b/c.srt"),
+            "with every character of it, the space included: {argument}"
+        );
+        assert_eq!(
+            argument.find('"'),
+            Some("/select,".len()),
+            "the opening quote is around the path and not around the switch: {argument}"
+        );
+    }
+
+    #[test]
+    fn a_file_it_cannot_read_is_refused_before_anything_starts() {
+        let dir = scratch("refusal");
+
+        let sheet = dir.join("notes.txt");
+        touch(&sheet);
+        let folder = dir.join("a-folder");
+        std::fs::create_dir_all(&folder).expect("create dir");
+
+        let missing = dir.join("gone.mp3");
+
+        let cases: [(&std::path::Path, &str); 3] = [
+            (&folder, "文件夹"),
+            (&missing, "找不到"),
+            (&sheet, "不是音频"),
+        ];
+
+        for (path, expected) in cases {
+            let refusal = refusal_for(path).unwrap_or_else(|| {
+                panic!("{} should be refused", path.display())
+            });
+            assert!(
+                refusal.reason.contains(expected),
+                "{}: expected {expected:?} in {:?}",
+                path.display(),
+                refusal.reason
+            );
+        }
+    }
+
+    #[test]
+    fn an_audio_file_is_let_through_whatever_its_case() {
+        // `.MP3` is an mp3. Windows capitalises extensions without asking, and
+        // refusing a file over the case of its name would be the wrong way
+        // round in every sense.
+        let dir = scratch("refusal-ok");
+
+        for name in ["a.wav", "b.MP3", "c.M4A", "d.opus", "e.mkv"] {
+            let path = dir.join(name);
+            touch(&path);
+            assert!(
+                refusal_for(&path).is_none(),
+                "{name} should be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn the_check_sorts_what_it_was_given_without_dropping_any_of_it() {
+        let dir = scratch("refusal-mixed");
+        let good = dir.join("keep.wav");
+        let bad = dir.join("drop.txt");
+        touch(&good);
+        touch(&bad);
+
+        let result = check_files(vec![
+            good.to_string_lossy().into_owned(),
+            bad.to_string_lossy().into_owned(),
+        ]);
+
+        assert_eq!(result.usable.len(), 1, "the audio file goes through");
+        assert_eq!(result.refused.len(), 1, "the other does not");
+        assert!(
+            !result.accepted.is_empty(),
+            "the dialog needs the formats to name them"
+        );
+    }
+
+    #[test]
+    fn every_command_the_window_calls_is_registered() {
+        // A command the window reaches for but nobody registered fails inside
+        // a webview console nobody is watching, and the person sees a button
+        // that does nothing. The names exist in two languages and nothing but
+        // this keeps them together — which matters because renaming a screen's
+        // worth of commands is exactly the kind of change that misses one.
+        //
+        // Both lists are read from source rather than from the built program:
+        // `generate_handler!` is a macro, and the frontend is not Rust.
+        let frontend = include_str!("../ui/src/lib/api.ts");
+        let backend = include_str!("lib.rs");
+
+        let invoked: BTreeSet<String> = frontend
+            .match_indices("invoke<")
+            .filter_map(|(at, _)| {
+                let rest = &frontend[at..];
+                let open = rest.find('(')?;
+                let quote = rest[open..].find('"')? + open + 1;
+                let close = rest[quote..].find('"')? + quote;
+                Some(rest[quote..close].to_string())
+            })
+            .collect();
+
+        let handlers = backend
+            .split_once("generate_handler![")
+            .and_then(|(_, rest)| rest.split_once(']'))
+            .map(|(list, _)| list)
+            .expect("the handler list is in this file; if it moved, move this test");
+
+        let registered: BTreeSet<String> = handlers
+            .split(',')
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .collect();
+
+        assert!(!invoked.is_empty(), "the frontend parser found nothing");
+
+        let unanswered: Vec<&String> = invoked.difference(&registered).collect();
+        let uncalled: Vec<&String> = registered.difference(&invoked).collect();
+
+        assert!(
+            unanswered.is_empty(),
+            "the window calls commands nothing answers: {unanswered:?}"
+        );
+        assert!(
+            uncalled.is_empty(),
+            "commands are registered that the window never calls: {uncalled:?}"
+        );
+    }
+
+    #[test]
+    fn every_engine_the_registry_offers_is_named_the_same_way_in_the_catalogue() {
+        // The picker is the catalogue filtered by the registry, so an engine
+        // missing from the catalogue can never be chosen, and a catalogue entry
+        // with no engine behind it is a row that could never run. The two lists
+        // are written by hand in different crates, which is exactly why this is
+        // a test rather than a comment asking people to keep them in step.
+        let mut registry = verse_core::Registry::new();
+        verse_asr::register_builtin_engines(&mut registry);
+
+        let catalog = Catalog::embedded().expect("the catalogue ships in the binary");
+
+        for descriptor in registry.engines() {
+            let spec = catalog.find(descriptor.id).unwrap_or_else(|| {
+                panic!(
+                    "engine {} has no catalogue entry, so the picker cannot offer it",
+                    descriptor.id
+                )
+            });
+
+            assert_eq!(
+                spec.display_name, descriptor.display_name,
+                "{} is named one way in the catalogue and another in the registry;                  the window shows the catalogue's, so they would disagree",
+                descriptor.id
+            );
+        }
+    }
+
+    #[test]
+    fn every_catalogue_model_says_what_it_is_for() {
+        // The panel shows these. A model with no description is a row a person
+        // has to choose between without being told the difference.
+        let catalog = Catalog::embedded().expect("the catalogue ships in the binary");
+
+        for spec in &catalog.models {
+            let description = spec
+                .description
+                .as_deref()
+                .unwrap_or_else(|| panic!("{} has no description", spec.id));
+
+            assert!(
+                !description.trim().is_empty(),
+                "{} has an empty description",
+                spec.id
+            );
         }
     }
 

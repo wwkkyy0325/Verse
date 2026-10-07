@@ -1656,3 +1656,675 @@ admission rule it was written with — two or more screens — is unchanged, and
 what the three survivors satisfy.
 
 Rust untouched; 332 tests and clippy clean, `svelte-check` 0 errors.
+
+## 2026-10-07 — One page: the model, the files, a real percentage, an extractive summary
+
+The window was five screens that replaced one another. It is now one page with
+a sidebar — which engine is running, and every file this session has been given
+— and a detail region that shows whichever file is selected. Four decisions
+recorded in the design had to be amended rather than quietly broken; each is
+marked in place with what changed and why.
+
+### The progress bar that "could not be built", and the measurement that says otherwise
+
+`tasks/p1b-gui.md` step 9 recorded that there would be no progress bar, for a
+stated reason: *"The decoder does not report a total length, and getting one
+means a probe pass over the file before decoding it."*
+
+The second half is a sound objection to a **probe pass** and does not apply
+here. ffmpeg prints `Duration:` in the banner of the decode that is already
+running — at `info` level, which `-loglevel error` was suppressing. Measured:
+
+| how ffmpeg is called | stderr |
+|---|---|
+| as the pipeline called it (`-loglevel error`) | **0 bytes** |
+| `-nostats -loglevel info` | **808 bytes**, incl. `Duration: 00:00:05.59` |
+
+So the denominator was free the whole time. `verse-audio` now parses it on the
+drain thread that was already reading stderr; `Event::JobProgress.fraction`
+became `Option<f32>` because a stream can declare `Duration: N/A`, and the
+window draws a bar with no number in it rather than an invented one. **The bar
+sits beside the growing transcript, never instead of it** — P5 says progress is
+visible as output rather than as motion, and a bare bar would be a regression
+against it.
+
+`-loglevel info` also put the whole input banner into the failure message,
+where it would have buried the complaint; the lines that describe the input are
+now filtered out, which is tested.
+
+**Verified end to end on a real job**, through `verse serve`: the fraction went
+**0.0716 → 1.0** on a real file with the real model.
+
+### The state model: kept, not replaced
+
+The obvious move was to replace `Screen` with a per-file record and rewrite the
+state machine. It was not taken, because the ~28 tests in `state.rs` are not
+tests of "there is one file" — they are tests of the one-file transition graph,
+and they encode things the project learned the hard way ("a failure for a job
+nobody announced is ignored", "output from a job that is over is ignored"). A
+replacement re-homes every one of those assertions and risks dropping a
+regression pin.
+
+So `Screen` keeps its name and its variants, and becomes **per file**:
+`FileEntry { input, screen }`, a roster beside it, and `screen()` keeps
+returning `&Screen` — the selected entry's. The result is that the existing
+assertions did not change at all, and the six new tests are the roster's own.
+
+`Screen::Queued { input }` was added and is not cosmetic: a queued file with a
+`Working` screen would let 取消 on the *waiting* file cancel the *running* one.
+
+### A race that the design would have shipped
+
+Dropping a folder is one gesture that arrives as many paths, all within a
+millisecond. `file_chosen` decided whether to start or to queue by asking
+whether a job was running — but a job's id is only known when `JobStarted`
+arrives, asynchronously. The second path therefore saw "no job" and started
+one, **cancelling the first**. The guard now keys on `running`, which is set
+the instant a file is accepted, and `several_files_dropped_at_once_...` pins
+it.
+
+### An extractive summarizer, labelled as one
+
+`sherpa-onnx` has no text generation at all, and `qwen3-asr` is an ASR decoder
+conditioned on audio — its config struct has no prompt field and its API is
+`decode`/`get_result`. Making those weights summarize means retraining them, so
+a small local LLM is a separate project, not a setting.
+
+What shipped instead is `verse-core::summary`: character-bigram term frequency,
+top sentences restored to source order. It is **extractive and said to be** —
+"摘录式摘要", with a line under the heading saying the sentences are quoted
+from the transcript in their original order and were not rewritten. The test
+that matters is `every_sentence_is_verbatim_from_the_transcript`, and it was
+falsified by appending one character to the output, which failed it.
+
+### The instrument, twice
+
+**A stale binary produced a false negative.** The check that a release build
+cannot publish a demo job was first run while the release build was still
+linking, so it read the *previous* binary — which predated the demo module
+entirely — and reported the demo absent from both. Re-run against the linked
+binary, with a debug build as the positive control and a real UI string as the
+negative one: release 0, debug 2 and 1, control 1. Three readings, because
+"absent" and "my search is broken" look identical.
+
+**A parser bug produced a false positive.** The check that every IPC command
+the window calls is registered flagged `reset` as missing. It was the last
+entry in the handler list and had no trailing comma. The check is now a test in
+`verse-app`, with both directions asserted, and it was falsified by removing a
+command — it named the missing one.
+
+### What is not verified
+
+**The layout has never been seen.** The window opens, does not panic, and every
+command it calls is answered — but whether the regions are the right size, the
+sidebar readable, the bar convincing, is a look, and a look needs a person.
+This is the largest gap in the round and it is stated rather than implied.
+
+Also unverified: that the percentage matches wall-clock; that the Chinese
+summary *reads* well (only that it is verbatim and ordered); `Duration:` on
+containers other than WAV; and a two-hour transcript, where both the summarizer
+and a several-thousand-row pane would really be tested.
+
+**Two findings left as findings.** The `export` command still does not update
+`outputs.json` — only autosave does — so a transcript saved only via *save as*
+has no record; that would matter to any future history and does not today. And
+the guard's recovery pass clears the transcript and re-sweeps, so the bar
+**resets to zero** on a recovered file, which is arguably honest and is at least
+now written down.
+
+364 tests, clippy clean, `svelte-check` 0 errors.
+
+### Two more found by insisting the demonstration actually work
+
+Making the dev-only demonstration run end to end — and *checking the filesystem
+afterwards* rather than assuming — turned up two things that unit tests could
+not have.
+
+**The window's startup was a chain of awaits, and one failure killed the rest.**
+`currentState()` → `models()` → `probeHardware()` → subscribe → the demo call,
+all inside one `async` block with nothing catching. A catalogue that failed to
+load would have taken the *subscriptions* with it, leaving a window that renders
+and never updates — precisely the failure mode the project names most often. The
+steps are now independent and a failure is shown rather than swallowed.
+
+**The demonstration used a path that did not exist.** It reported
+`演示音频.wav` as its input, which was deliberate — a person watching must not
+mistake it for their own recording — and wrong: the automatic save identifies an
+input by its length and modification time, so a path that cannot be stat'd is
+refused. Correctly refused, and already tested
+(`an_input_that_cannot_be_read_is_reported`). The demonstration therefore ended
+with a transcript on screen and nothing written anywhere, and only looking in
+the output directory said so. It now creates a real placeholder file, and the
+whole path — bus, state, roster, bridge, autosave — is exercised for real:
+running the app produces `演示音频.srt` with the twelve lines and correct
+timecodes.
+
+**The window's startup was also where the demonstration hid.** While the call
+sat at the end of that chain it never ran, and the command swallows nothing —
+it was simply never reached. Moving it to the front is what made the probe
+print, and is what identified the chain as the problem.
+
+**What the extractive summarizer actually picks**, for a twelve-line meeting:
+two sentences, "整体交付比计划晚了大概两周。" and "我建议先把测试设备的钱留出来。"
+`Budget::default()` is at most 7 sentences *and* at most 20% of the candidates,
+whichever is smaller, so a short transcript is bounded by the ratio and a long
+one by the cap. Two of twelve is defensible and thin; whether it should be more
+is a judgement the maintainer can make on sight, which is why the number is
+written down here rather than tuned invisibly.
+
+365 tests, clippy clean.
+
+## 2026-10-07 — The window, corrected after the maintainer looked at it
+
+Nine things, most of them things no test could have caught because they are
+about how the page *looks* rather than what it holds.
+
+**Scrollbars had never been styled.** `app.css` had no `scrollbar` rule at all,
+so the webview drew the operating system's: a wide grey trough with stepper
+arrows, taking about a fifth of a 288 px sidebar. Now thin, `--border` coloured,
+and darkening on hover so it can still be found. The comment says why the
+colour is furniture rather than foreground.
+
+**The title bar is gone.** It held the application name, the running job's
+numbers and two buttons. The numbers moved beside the bar they describe, the
+name and version moved to the bottom-left of the sidebar where they cost no row
+of their own, and 关于 went with them. That is one whole horizontal band of
+window reclaimed, which is what was asked for.
+
+**取消 moved next to the progress bar and turned red.** It belongs to the bar —
+P4 says anything over a second can be stopped, and P5 says the bar is where the
+waiting happens — and `variant="destructive"` in this component set is a tint
+(`bg-destructive/10`), not the solid red that was asked for, so the class
+overrides it.
+
+**添加文件 is pinned.** It was inside the scrolling list, so it moved down as
+files accumulated. A button people have to go looking for is a button that
+should not have been scrolling.
+
+**The summary and the transcript were fighting for the same space.** The
+summary section was `shrink-0` with no height bound: a long one pushed the
+transcript off the top of the pane, and the transcript lost. It is now capped
+and scrolls on its own.
+
+**A real bug: the per-file view state was not reset on a click.** `noteShown`
+ran only after a whole snapshot, so selecting another file left the previous
+one's summary and messages on screen — one file's conclusions under another
+file's transcript. It now runs after every update, which is what the user
+described as "going forward but not back".
+
+**A regression I had introduced: the failure screen lost its retry.** The
+`Recovery` enum exists so that every failure names an action it can actually
+take — retry, fetch a model, or choose another file — and rewriting the screen
+had flattened all three into one 返回, which is only ever the third. The buttons
+are back, one per variant. That needed a **new `retry` command**, because the
+new deduplication reads a re-dropped path as "here it is" and starts nothing,
+so retrying had no way in at all.
+
+**Re-dropping a file is now a look-up, not a second row.** It selects the row
+that file already has. Keyed on the path, so two copies under different names
+are still two files.
+
+The IPC-name test caught the `retry` command the moment it was registered and
+the window did not yet call it — which is what it is for.
+
+**A question with an unwelcome answer: the evaluation dataset is gone.** A
+search of the whole drive for `manifest.tsv` and for `.parquet` finds nothing
+outside the recycle bin. What survives is `tools/asr-eval/extract.py`, the
+script that made it, and the numbers in `tasks/asr-evaluation.md`. Rebuilding
+it means running that script against the source parquet again.
+
+367 tests, clippy clean, `svelte-check` 0 errors.
+
+## 2026-10-07 — The service documented inside the window, and two layout corrections
+
+**关于 now carries the API, written for a program.** The dialog lists the
+service's routes in Chinese, for a person skimming, and holds the full
+description in English behind 查看完整说明, with 复制给 agent to hand it over.
+The brief is built to be self-contained: what starts the service, where the
+discovery file is, that every request needs the bearer token, that an `Origin`
+header is refused, the routes, the 202-and-poll cycle, and that `fraction` can
+be null.
+
+**The rows and the brief are generated from one list**, so the dialog and the
+text somebody pastes cannot describe different APIs. What that does *not*
+prove, and the comment says so: the list is a copy of `crates/verse-cli`'s
+router, which reaches this crate only as a running process — the CLI has no
+library target to import. A route added there and not here would be documented
+wrongly, and `llms.txt` has the same exposure.
+
+**The brief was half Chinese and the comment claimed it was English.** Caught
+by reading the assembled text rather than the substring tests, which passed
+either way. The route descriptions are for the person at the dialog; the brief
+now prints method and path only, and says what the routes are for in prose, in
+one language.
+
+**摘录式摘要's heading row is gone and its button moved to the footer**, beside
+另存为 and 再来一个 — the three things you can do to a finished transcript now
+sit together. The summary area only exists once there is something in it.
+
+**A drop anywhere shows a glowing frame.** The empty state is a drop target and
+lights up on its own; every other state accepted a drop with nothing on screen
+saying so. The overlay is `pointer-events-none`, so it cannot swallow the drop
+it is advertising.
+
+**The demonstration was leaving files in Documents.** It gave each run a unique
+path, and the automatic save names a result after its source — so every run
+produced a new numbered `演示音频.srt` in a person's documents folder. Nine had
+accumulated. One path, and the run re-runs a file already in the list through
+`retry`, which is what `retry` is for; the output overwrites itself now.
+
+370 tests, clippy clean.
+
+## 2026-10-07 — One bar, one button convention, and a lock that locks the right thing
+
+**The engine was lockable in the wrong place.** The model buttons were disabled
+by asking the *screen being shown* whether it was working. A job runs on its own
+entry, so selecting a finished file while another was mid-run made the buttons
+look available; pressing one raised an error, because the backend checks
+`running` and knows better. The window now asks the list — is any entry working
+— which is the question that matters, and it says why in a line above the
+buttons rather than going quietly dead.
+
+**Which engine made which transcript is now recorded.** `FileEntry` carries the
+engine it was handed to, set when the file actually starts and sent with every
+row. Without it, changing engines mid-session left a list of results with
+nothing distinguishing them, and reading the session's current engine at display
+time would have relabelled everything already done. The finished bar now says
+完成 · 用 SenseVoice-Small 识别 · 共 N 段.
+
+**The status bar is one row with two states.** 取消 lived above the transcript
+and the action buttons below it, which is why they disagreed about the edge of
+the pane. They never happen at the same time, so they are the same row in the
+same place: a progress bar with 取消 beside it while working, and the summary
+with 摘录 · 另存为… · 再来一个 when finished.
+
+**Buttons follow one convention, and none is a bare ghost.** The primary action
+a screen exists for takes the filled variant, everything else takes the
+secondary fill, and stopping takes the destructive one. All of them are the
+vendored `Button`; nothing is hand-styled except that cancel is forced to a
+solid red, because this component set's `destructive` is a tint.
+
+**The demonstration was still littering, and the first fix did not work.**
+Giving it one path was not enough: the automatic save identifies a source by
+path, length **and modification time**, and the placeholder was rewritten every
+run — so a fixed path with a fresh mtime is a *different* source, and each run
+produced another numbered file. It is now written once and left alone.
+Checked by running it three times rather than once: three runs, one file. The
+first fix looked right and was verified too briefly.
+
+370 tests, clippy clean, `svelte-check` 0 errors.
+
+**The locked-model explanation is a hover, not a permanent line.** It was a
+paragraph that appeared whenever anything was being recognised — which is
+correct and also a line that is always there, so it becomes a line nobody
+reads. The model rows grey out and stop responding, and the reason appears on
+hover over the section.
+
+Anchored to the *section* rather than to the buttons, and that is not cosmetic:
+a disabled button still hovers its parent, so a tooltip attached to the buttons
+themselves would never appear on the one thing somebody would be pointing at.
+
+**A drop is checked before it starts, not after it fails.** Dragging a folder or
+a spreadsheet onto the window used to hand it to the decoder, watch it fail, and
+show a decode error — which reads as the program being broken rather than as the
+file being wrong. The window now asks `check_files` first and refuses with a
+dialog naming each file and the reason, before any progress bar appears.
+
+**The list of what this program reads is now in one place.** It was in
+`crates/verse-cli` *and* copied into the window's file-picker filter. It lives
+in `verse-core` now, and both callers use it — the picker asks for it on mount,
+the command line expands folders with it, and `check_files` refuses with it. One
+list, three readers, none able to drift from another.
+
+Two extensions were added while moving it (`m4b`, `ape`, `wv`, `oga`), and the
+test is now case-insensitive: `.MP3` is an mp3, and on Windows a capitalised
+extension usually is exactly that — a file something else renamed.
+
+**The window is deliberately stricter than the command line, and the code says
+so.** `verse-cli` attempts a file named explicitly whatever it is called,
+because refusing by extension would turn a decodable file into a usage error and
+the decoder is the only thing that really knows. A person who drags the wrong
+thing onto a window should hear about it before waiting rather than after. The
+consequence — a file with an unusual but decodable extension is refused by the
+window and accepted by the command line — is recorded in `verse-core` beside the
+list, as an intended difference rather than a bug to be discovered later.
+
+373 tests, clippy clean, `svelte-check` 0 errors.
+
+## 2026-10-07 — The download moves into the model card, and the demonstration stops firing by itself
+
+**A model can be fetched from its own card.** The panel said 需要下载 and
+nothing else: the only way to get a model was to drop a file that needed it and
+wait to be told. Each missing model now carries a 下载 button, and the progress
+bar and byte counts appear on the row that is downloading. That is what the
+panel is for — getting a model ready *before* there is a file that wants it.
+
+`fetch_model` takes the model id now, and `Update::Download` says which model it
+is about, so one model's progress cannot appear on another's card. The screen
+that waits for a model and the card both call the same command; they differ only
+in what happens afterwards, and a finished download resumes the waiting file
+**only when the waiting file wanted that exact model** — fetching something else
+from the panel must not start a job whose model is still missing.
+
+The card is a `div` now rather than a `button`: a button cannot hold a button,
+and the download control belongs on the row that says the model is absent.
+
+**The demonstration no longer runs on its own.** It fired whenever `VERSE_DEMO`
+was set, and the development instructions tell you to set it — so every launch
+did a demo job and the program looked like it was doing something by itself.
+Asking is a click now: `demo_available` decides whether the window *offers* the
+demonstration, and `demo_progress` runs it.
+
+**What "it cannot ship" means, exactly, and where it is weaker than it sounds.**
+The release binary is searched and has no demonstration in it — the command's
+body is `#[cfg]`-compiled out, so there is no publisher to reach. The *frontend*
+bundle is a different matter: `演示` appears in it twice, inside a branch guarded
+by `import.meta.env.DEV`, which the build replaces with `false`. So the code
+cannot run — the button cannot render and the command answers `false` — but the
+strings are shipped in the JavaScript. Recorded rather than described as absent.
+
+Verified by launching without `VERSE_DEMO` and checking that the demonstration's
+output file was not rewritten, rather than by reading the guard.
+
+373 tests, clippy clean, `svelte-check` 0 errors.
+
+**The download bar was measuring the wrong thing, and it was reported as a
+number.** The card said 987 MB and then showed "44 MB" — which is
+`conv_frontend.onnx`, the first of Qwen3-ASR's five files. The downloader pulls
+one file at a time and its `Fetching` state is per-file, with a comment saying
+so in as many words; the window passed that straight through. A bar that fills
+once per file fills five times and looks finished on the first.
+
+The running total is now added up from the catalogue, which knows every file's
+size. `ModelProgress` notices the file-name change to decide what is finished —
+and a mirror retry re-reports the same name, so a name that has not changed is
+not counted twice. A model with any unknown size reports *no* total rather than
+a partial one.
+
+It is a struct with tests rather than a closure, because the arithmetic is the
+part that goes wrong and a closure inside a download callback cannot be tested
+at all. Falsified by making it return the per-file figure: `left: Some(1),
+right: Some(101)` — which is the reported bug, in a test.
+
+The same number was wrong on the screen that waits for a model, for the same
+reason; it reads the panel's figures now.
+
+**A model being downloaded cannot be chosen as the engine.** Selecting it would
+put the window in a state where the next file has no recogniser — the download
+would have to finish before anything could happen, and the row already says so
+with a progress bar.
+
+## 2026-10-07 — The downloader, after being asked whether it was good enough
+
+The question was whether it handled resume, concurrency, hash verification and
+the ways a download goes wrong. Auditing it turned up more than expected and
+one genuine bug that had nothing to do with the four.
+
+### What was already there
+
+Resume, with the classic corruption handled — a mirror that ignores `Range`
+answers 200 rather than 206, and the partial is **discarded rather than appended
+to**. Atomic promotion through `<name>.part` and a rename, so an interrupted
+transfer never looks complete. Truncation refused before promotion. Mirror
+rotation with every failure reported together. Cancellation that leaves the
+partial. Connect and response timeouts, aimed at a mirror that accepts a
+connection and then says nothing. That is a better downloader than most, and
+the gaps below are only visible against it.
+
+### The bug: a failed download never reached the window
+
+Every failure path ended `return Ok(Failed { .. })` **without calling the
+callback**. The return value was the only place the failure existed — and the
+window does not read it. A download that failed sat on "fetching" for ever.
+
+Found while restructuring that function, not by looking for it. Pinned by
+`a_failure_reaches_the_callback_and_not_only_the_return_value`, and falsified:
+with the report removed the callback sees `Idle` and three `Fetching` and never
+a failure, which is exactly what a person would have been looking at.
+
+### The four that were asked for
+
+**SHA-256, computed while streaming.** `ModelFile.sha256`, fed from the same
+buffer that is written to disk, compared before the rename — so nothing that
+fails verification is ever at the destination where `is_present` would trust it
+by length, and a mismatch **deletes the partial**, because resuming would
+continue from bytes already known to be wrong.
+
+**Where the hashes came from matters, and is recorded rather than implied.**
+They were computed from the copies on this machine. The mirrors are hand-written
+and one is a third-party upload, so there is no signed list to compare against:
+this pins *the bytes we have*, and would not catch a mirror that served
+something wrong from the beginning. Five of nine files are hashed; the rest are
+Qwen3-ASR's, which are not downloaded yet. `sha256_file` lives beside the check
+that consumes it, so the two cannot be different algorithms — that failure would
+make every recorded hash wrong at once and look like every mirror being corrupt.
+It is tested against the published vector for "abc", because a hash compared
+only against itself would agree with any mistake it made.
+
+**A mirror is tried three times.** `qwen3-asr` has a single mirror; one dropped
+connection was the end of the download. Backoff doubles from 400 ms and is
+**cancellable in slices**, so pressing 取消 does not wait it out. A server that
+answered with a 4xx is **not** retried — it will answer the same way — while a
+5xx and a dropped connection are.
+
+**Free space is checked first.** Summed from the catalogue for the files that
+are missing, against what the filesystem reports, with 64 MB of headroom. A
+download that does not fit says so before it starts rather than failing a
+gigabyte in. `sysinfo` was already in the graph for the memory probe, so this
+is a manifest line and a feature.
+
+**Files are fetched together**, up to three at a time — they are independent,
+and `qwen3-asr` is 987 MB whose largest file is 756, so the other four cost
+nothing to fetch alongside it. Three rather than five because they come from one
+host.
+
+That last one **changed the progress arithmetic, for the better**. The window
+decided a file was finished by noticing the name change, which is only true when
+they arrive one at a time. It is now the latest figure *per file*, summed, and
+seeded with the files already on disk — so a resumed download starts at what is
+there rather than at zero, and concurrency needs no special case.
+
+### A test that was slow for the wrong reason
+
+One test pointed a mirror at `127.0.0.1:1` to make the transfer fail. With
+retries it went from ~2 s to 6.4 s — a refused connection costs about two
+seconds here and the retry paid it three times. It now uses an address that
+fails at the request rather than after a round trip: the same assertion, and the
+suite is back to 1.2 s, faster than it was before any of this.
+
+### Not done, and recorded
+
+Many connections for one file — splitting a file needs seeks and reassembly, and
+the gain is smaller than parallel files. A lock against two processes writing
+one `.part`. `Retry-After` on a 429, which the backoff covers roughly. And
+`is_present` is still length-only: hashing 987 MB on every check is not
+affordable, so a corrupt file already on disk is trusted.
+
+379 tests, clippy clean. The task log is `tasks/downloader-robustness.md`.
+
+## 2026-10-07 — The extractive summary is judged not worth having, and the first measurement of what would replace it
+
+Three things from one report: the summary panel could not be closed, an engine
+that is not on disk could still be chosen, and — the maintainer's judgement,
+having looked at it — **the extractive summary is not worth having.**
+
+### The two fixes
+
+**The summary opens and closes from the same button.** It could not be closed at
+all: the only control that touched it was the button that made it, and a second
+press looked like it had done nothing.
+
+**An engine that is not on disk cannot be chosen.** The previous round blocked
+choosing a model *while it was downloading*; that was not the whole rule. A
+model that is simply absent could still be selected, leaving the window in a
+state where the next file has no recogniser — and the row already says 需要下载
+with the button to fix it. Refused in the backend as well as greyed in the
+window, because a rule enforced only by the interface is a rule the interface
+can be talked out of.
+
+### Why the extractive summary is going
+
+It can only quote. It cannot merge two sentences about one thing, cannot say
+what was decided, and cannot answer the only question anybody has about a
+meeting. "关键句" would be a fairer name, which is another way of saying it does
+not do the job. `tasks/llm-summary.md` carries the reasoning, and it does not
+propose keeping it as a consolation.
+
+### The measurement, and what it is actually about
+
+A model has to write a summary, so a small one was measured — **on a real
+transcript**, `标准录音 13.srt`, 5,718 characters of Chinese, not a sample
+written for the occasion.
+
+| Qwen2.5-0.5B-Instruct Q4_K_M | |
+|---|---|
+| prompt | 3,831 tokens |
+| prefill | **279 s** |
+| generation | 65 s for 221 tokens |
+| **total** | **5 min 45 s** |
+
+**That number is about candle, not about small models.** Prefill is *linear in
+the prompt* — 233 tokens took 13.5 s, 3,831 took 279 s, both about 58 ms a
+token. A prompt handled in one batched matmul does not get more expensive per
+token the longer it is. Candle's quantized CPU path is building this one token
+at a time, and reporting "small LLMs are too slow on CPU" from this run would be
+**comparing two things that are not comparable**, which is the mistake this
+project names first.
+
+The achievable speed could not be measured here: no `cmake`, no `ninja`, no
+`make`, and llama.cpp lives on GitHub. That toolchain is the prerequisite for
+any speed conclusion at all.
+
+**The quality needed no runtime to judge, and it is the part that matters.**
+The first run, greedy, repeated one sentence seventeen times — which said more
+about the decoder than the model, so a presence penalty was added and it was run
+again. The second output is fluent and on topic and **wrong in the ways that
+matter**: it frames the conversation as instructions to 被申请人 when the
+transcript is somebody asking how to *file*; it says material may be submitted
+by email or WeChat, which is **not in the transcript**; and three of its eight
+points are the same point.
+
+A summary somebody is meant to trust that is confidently wrong is worse than no
+summary, because the value of the feature is that reading it is cheaper than
+reading the transcript.
+
+**1.5B was not measured**, and that is deliberate: at candle's prefill rate one
+run is about fifteen minutes, and measuring it badly would be worse than saying
+it was not measured. The order is a runtime that batches, then 1.5B, then the
+decision.
+
+The spike is `tools/llm-summary-spike/` — its own workspace so none of this
+weighs on `cargo test --workspace`, with a `.gitignore` for the 1.7 GB of cargo
+output and 476 MB of weights, because the root ignore covers `/models` and this
+directory is not that one.
+
+## 2026-10-07 — The extractive summary comes out, and yesterday's transcripts come back
+
+### The summary is gone
+
+It was measured and judged not worth having — `tasks/llm-summary.md` carries the
+numbers and the reasoning. Removed rather than kept as a consolation, which is
+what that document said should happen if the measurement went this way:
+`verse-core::summary`, the `summary` command, `SummaryView`, and the panel. Ten
+tests went with it, because they were pinning behaviour nobody wants.
+
+The spike that measured a replacement stays, outside the workspace, until the
+question is settled.
+
+### What closed, and what could not be chosen
+
+**The summary opens and closes from the same button** — it could not be closed
+at all, and the only control that touched it was the button that made it, so a
+second press looked like it had done nothing.
+
+**An engine that is not on disk cannot be chosen.** The previous round blocked
+*downloading* models; that was not the whole rule. Absent ones could still be
+selected, leaving the window in a state where the next file has no recogniser.
+Refused in the backend as well as greyed in the window, because a rule the
+interface enforces alone is a rule the interface can be talked out of.
+
+### History: the list survives the window closing
+
+It did not. The file list lived in memory, so closing the window lost it while
+the `.srt` files it had written stayed in `Documents/Verse` — the results
+survived and the record of them did not, and somebody who transcribed a meeting
+last week had no way to reach it from inside the program.
+
+**The roster, written down.** `verse-store::history` records the input, the
+output, the engine and when it finished, capped and written atomically like the
+output record beside it. A pointer, not a copy: the `.srt` on disk **is** the
+result, and a second transcript in a database would be a second thing that can
+drift from the one a person can open in a player.
+
+**And read back, not duplicated.** Restoring a transcript means parsing the file
+it was written to, so `verse_core::export::parse_srt` was added — the inverse of
+`render`, in the same module so the two cannot disagree about the format.
+
+**A file that is not subtitles is refused rather than half-read.** The cue
+number is discarded (a position, not information, and files get renumbered by
+hand); a comma or a dot between seconds and milliseconds is accepted (SubRip
+says comma, several tools write a dot, players take both); cue settings after
+the end timestamp are ignored; a block with no `-->` is skipped rather than
+becoming a subtitle line.
+
+**Validated on a real file, not a fixture.** The maintainer's own recording —
+124 cues, 5,595 characters, with English fragments and mixed punctuation in it —
+parses, and **re-rendering reproduces the file byte for byte**. That is the
+strongest form of "the two cannot disagree".
+
+A restored row is `Done` **with `exported` already set**, which is what stops
+the automatic save from writing it out a second time on the first event after
+launch, into a numbered file beside the one it came from. Nothing is selected on
+launch: the drop target shows, with what was done before sitting beside it.
+
+**Verified end to end, in the two halves that can be seen from outside.** The
+record: the demonstration produced an entry naming its input, output, engine and
+time. The restore: deleting the result and relaunching pruned the entry and
+rewrote the file, which is only possible if the record was loaded and walked at
+startup. **Whether the row appears in the list needs a person** — that is the
+click this project keeps having to hand over.
+
+382 tests, clippy clean, `svelte-check` 0 errors.
+
+## 2026-10-07 — The history list learns to be used: shown, filtered, removed
+
+The history worked and could not be *managed*. Four things, all from the
+maintainer looking at it.
+
+**Show the result in the file manager.** After reading a transcript the next
+thing a person usually wants is the file, and the program already knows where it
+is. `explorer /select,` on Windows, `open -R` on macOS, `xdg-open` on the folder
+elsewhere — spawned with `std::process`, so no plugin and no new dependency.
+
+**The exit status is not checked**, and that is deliberate: `explorer.exe`
+returns non-zero when it *succeeds*, so treating that as failure would report a
+broken action every time it worked. What is checked is the file existing, and
+that check is three lines in front of the spawn.
+
+**A filter, once the list is long enough to need one.** Above six rows a small
+box appears; below that it would be furniture. The row's index travels with it
+through the filter, because everything that acts on a row — selecting,
+forgetting — addresses it by its place in the roster rather than its place in
+the filtered view. That is the bug a filter invites, and it is why the filtered
+list carries pairs rather than the entries alone.
+
+**Removing a row, in both senses.** The 🔥× on a row is the reversible half:
+the transcript stays on disk and only the record forgets it — and the record
+really forgets it, because forgetting the row without forgetting the entry would
+put it back on the next launch and "remove this" would mean nothing. The 删除
+button in the finished bar is the irreversible half, behind a confirmation,
+because a file that is gone is gone.
+
+Keeping them separate is the point. "I do not want to see this" and "I want this
+deleted" are different sentences, and one button that guessed between them would
+be a button that sometimes deletes something.
+
+**Not done, and now the largest gap in this feature:** a file already in the
+list *still* cannot be transcribed again. That rule was the maintainer's — "re-doing
+a file that is already here should be skipped" — and it was right when the list
+lived for one session. With history it is permanent: drop a recording that was
+re-cut since, and the window shows the old transcript with no way to refresh it.
+The maintainer judged it lower priority than the four above; it is written here
+so it is not quietly forgotten.
+
+385 tests, clippy clean, `svelte-check` 0 errors.

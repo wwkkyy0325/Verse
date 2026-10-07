@@ -69,6 +69,22 @@ pub struct ModelFile {
     /// HTTP 200.
     #[serde(default)]
     pub size: Option<u64>,
+    /// Lowercase hex SHA-256 of the whole file.
+    ///
+    /// Absent means unverified, which is where this started: a length check
+    /// catches a truncated transfer and says nothing at all about a corrupt
+    /// one. The digest is computed while the bytes stream past — the same
+    /// buffer that is written to disk is fed to the hasher — so it costs no
+    /// second read.
+    ///
+    /// **Where these came from matters.** They were computed from the copies on
+    /// this machine, not taken from a publisher: the mirrors are hand-written
+    /// and one of them is a third-party upload, so there is no signed list to
+    /// compare against. That pins *the bytes we have* and would not catch a
+    /// mirror that served something wrong from the beginning. Better than a
+    /// length, worth knowing the shape of.
+    #[serde(default)]
+    pub sha256: Option<String>,
 }
 
 /// A model and everything needed to fetch it.
@@ -77,6 +93,18 @@ pub struct ModelSpec {
     /// Stable identifier.
     pub id: String,
     pub display_name: String,
+    /// One sentence saying what this model is for, for a person choosing.
+    ///
+    /// In Chinese, unlike everything around it: this is user-facing copy, and
+    /// the interface is Chinese throughout. The catalogue is where facts about
+    /// models live, so the description belongs here rather than in whichever
+    /// front-end happens to want it.
+    ///
+    /// Optional, and `#[serde(default)]`, so a catalogue written before this
+    /// field existed still parses — the version gate is for incompatible
+    /// shapes, and an absent optional field is not one.
+    #[serde(default)]
+    pub description: Option<String>,
     pub files: Vec<ModelFile>,
     /// Where to try, in order. The first success wins.
     pub mirrors: Vec<Mirror>,

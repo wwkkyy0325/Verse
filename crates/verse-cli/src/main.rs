@@ -248,17 +248,6 @@ impl TranscribeOptions {
     }
 }
 
-/// Containers ffmpeg can pull an audio track out of.
-///
-/// Consulted only when deciding what a **directory** expands to. A file named
-/// explicitly on the command line is always attempted, whatever it is called —
-/// refusing it by extension would turn a decodable file into a usage error,
-/// and the decoder is the only thing that actually knows.
-const AUDIO_EXTENSIONS: &[&str] = &[
-    "wav", "mp3", "mp2", "m4a", "aac", "flac", "ogg", "opus", "wma", "amr", "aiff", "aif", "caf",
-    "mp4", "mkv", "mov", "webm", "avi", "ts",
-];
-
 /// Turn what was typed into the list of files to transcribe.
 fn expand_inputs(positionals: &[PathBuf]) -> Result<Vec<PathBuf>, Failure> {
     let mut files = Vec::new();
@@ -313,11 +302,15 @@ fn collect_audio(dir: &Path, out: &mut Vec<PathBuf>) -> verse_core::Result<()> {
     Ok(())
 }
 
+/// Consulted only when deciding what a **directory** expands to. A file named
+/// explicitly on the command line is always attempted, whatever it is called —
+/// refusing it by extension would turn a decodable file into a usage error, and
+/// the decoder is the only thing that actually knows.
+///
+/// The list itself lives in `verse-core`, because the window needs the same one
+/// and two copies drift.
 fn has_audio_extension(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(str::to_ascii_lowercase)
-        .is_some_and(|e| AUDIO_EXTENSIONS.contains(&e.as_str()))
+    verse_core::looks_like_audio(path)
 }
 
 /// Whether this run keeps and consults a transcript cache, and where.

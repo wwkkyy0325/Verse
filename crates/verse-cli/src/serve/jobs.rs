@@ -87,6 +87,7 @@ struct JobRecord {
     /// thing in this process.
     segments: usize,
     position_ms: u64,
+    fraction: Option<f32>,
     result: Option<FileResult>,
     cancel: CancelToken,
 }
@@ -145,6 +146,7 @@ impl JobRecord {
                 Some(Progress {
                     segments: self.segments,
                     position_ms: self.position_ms,
+                    fraction: self.fraction,
                 })
             } else {
                 None
@@ -324,6 +326,7 @@ impl Jobs {
                 finished: None,
                 segments: 0,
                 position_ms: 0,
+                fraction: None,
                 result: None,
                 cancel: CancelToken::new(),
             },
@@ -541,8 +544,13 @@ fn spawn_drain(subscription: Subscription, inner: Arc<Inner>) {
             // result, and holding every segment twice would double the only
             // unbounded thing in this process.
             Event::TranscriptSegment { .. } => record.segments += 1,
-            Event::JobProgress { position, .. } => {
+            Event::JobProgress {
+                position,
+                fraction,
+                ..
+            } => {
                 record.position_ms = position.as_millis() as u64;
+                record.fraction = *fraction;
             }
             _ => {}
         }

@@ -180,3 +180,45 @@
 		font-weight: 600;
 	}
 }
+
+/* Scrollbars, styled rather than left to the operating system.
+ *
+ * Windows draws a wide grey trough with stepper arrows from another decade,
+ * and inside a 288 px sidebar it takes a fifth of the width. The webview is
+ * Chromium, so the WebKit pseudo-elements are what apply; `scrollbar-width`
+ * and `scrollbar-color` come first because they are the standard spelling and
+ * a future engine may drop the prefixed ones.
+ *
+ * The thumb is `--border` rather than `--muted-foreground`: a scrollbar is
+ * furniture, and at this width a strong colour reads as content. It darkens on
+ * hover so it can still be found. */
+* {
+	scrollbar-width: thin;
+	scrollbar-color: var(--border) transparent;
+}
+
+::-webkit-scrollbar {
+	width: 10px;
+	height: 10px;
+}
+
+::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+	background-color: var(--border);
+	border-radius: 9999px;
+	/* A transparent border clipped to the content box makes the thumb thinner
+	 * than its track without a second element. */
+	border: 2px solid transparent;
+	background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+	background-color: var(--muted-foreground);
+}
+
+::-webkit-scrollbar-corner {
+	background: transparent;
+}

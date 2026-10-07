@@ -17,7 +17,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use verse_core::{CancelToken, EventBus, JobId, Segment, Subscription, Transcript};
 use verse_pipeline::{ModelKeeper, Request, DEFAULT_IDLE};
-use crate::state::{AppState, Applied, Recovery, Screen};
+use crate::state::{AppState, Applied, FileEntry, Recovery, Screen};
 
 /// The event name the window listens on.
 pub const UPDATE: &str = "verse://update";
@@ -99,6 +99,16 @@ impl Default for App {
     }
 }
 
+impl App {
+    /// The next job id.
+    ///
+    /// One place hands these out, so a caller that is not starting a real job
+    /// — the window's demonstration — cannot collide with one that is.
+    pub(crate) fn claim_id(&self) -> JobId {
+        JobId(self.next_job.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
 /// Release the job slot, if it still belongs to `job`.
 ///
 /// Guarded rather than unconditional: a cancelled job's worker can finish
@@ -127,21 +137,235 @@ fn clear_job(shared: &App, job: JobId) {
 pub enum Update {
     /// The screen changed. The window replaces what it is showing.
     Screen { screen: ScreenView },
-    /// One more segment was recognised.
+    /// The list of files changed, and possibly which one is shown.
+    ///
+    /// Sent whenever a file's state moves, including files that are not on
+    /// screen — the list carries every file's state, so a background file
+    /// finishing is still something to show.
     #[serde(rename_all = "camelCase")]
-    Segment {
-        start_ms: u64,
-        end_ms: u64,
-        text: String,
+    Roster {
+        entries: Vec<EntryView>,
+        selected: Option<usize>,
     },
+    /// A different file now owns the pane.
+    ///
+    /// Carries the transcript as well as the screen because the window holds
+    /// one segment list: switching files replaces it rather than appending to
+    /// whatever the previous file had accumulated.
+    #[serde(rename_all = "camelCase")]
+    Selected {
+        screen: ScreenView,
+        segments: Vec<SegmentView>,
+    },
+    /// One more segment was recognised.
+    Segment(SegmentView),
     /// The job moved forward without the screen changing.
     #[serde(rename_all = "camelCase")]
-    Progress { elapsed_ms: u64 },
+    Progress {
+        elapsed_ms: u64,
+        /// `null` when the file's length is not known. A bar with no number in
+        /// it is honest; a bar at zero is not.
+        fraction: Option<f32>,
+    },
     /// A new job is starting; drop everything from the previous one.
     Cleared,
     /// A model download moved. Sent often, so it carries only the download
-    /// and not the whole screen.
-    Download { download: DownloadView },
+    /// and not the whole screen — plus which model, because the panel has one
+    /// card per model and each shows its own.
+    Download {
+        model: String,
+        download: DownloadView,
+    },
+    /// Everything at once.
+    ///
+    /// The increments above are for the bus, which fires often enough that
+    /// resending the whole state for each one would be wasteful. This is for
+    /// the moments where there is no increment to send: the first paint, and
+    /// anything a command did on its own thread.
+    Snapshot { state: StateView },
+}
+
+/// The whole window's worth of state, as the frontend reads it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateView {
+    pub screen: ScreenView,
+    pub entries: Vec<EntryView>,
+    pub selected: Option<usize>,
+    /// The segments of whichever file is being shown, so a window that has
+    /// just opened or just switched files has the transcript, not an empty
+    /// pane waiting for the next event.
+    pub segments: Vec<SegmentView>,
+}
+
+impl StateView {
+    pub fn of(state: &AppState) -> Self {
+        Self {
+            screen: view_of(state.screen()),
+            entries: state.files().iter().map(EntryView::of).collect(),
+            selected: state.selected(),
+            segments: state.segments().iter().map(SegmentView::from).collect(),
+        }
+    }
+}
+
+/// One segment, as the window reads it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SegmentView {
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub text: String,
+}
+
+impl From<&Segment> for SegmentView {
+    fn from(segment: &Segment) -> Self {
+        Self {
+            start_ms: segment.start.as_millis() as u64,
+            end_ms: segment.end.as_millis() as u64,
+            text: segment.text.clone(),
+        }
+    }
+}
+
+/// A file the window will not hand over, and why.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Refusal {
+    /// The file's name, not its path — a path is too long to show and never
+    /// what tells two files apart.
+    pub file: String,
+    /// A sentence naming what is wrong, written for the person who dragged it.
+    pub reason: String,
+}
+
+/// What came of looking at a drop or a selection before starting anything.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckResult {
+    /// The paths that can be processed, in the order they arrived.
+    pub usable: Vec<String>,
+    pub refused: Vec<Refusal>,
+    /// What this build does accept, so the dialog can name the formats rather
+    /// than leaving somebody to guess. The same list the command line expands
+    /// a directory with.
+    pub accepted: Vec<String>,
+}
+
+/// Whether a path is something to refuse, before any work starts.
+///
+/// The window checks before it starts; the command line does not, and the
+/// difference is deliberate. A caller that typed a path gets ffmpeg's verdict,
+/// which is the only correct one — a decodable file with an odd name must not
+/// become a usage error. A person who drags a folder onto a window should be
+/// told so at once, rather than watching a progress bar and then reading a
+/// decode failure.
+pub fn refusal_for(path: &std::path::Path) -> Option<Refusal> {
+    let file = file_label(path);
+
+    if path.is_dir() {
+        return Some(Refusal {
+            file,
+            reason: "这是一个文件夹，不是文件。请打开它，选中里面的音频文件。".to_string(),
+        });
+    }
+
+    if !path.exists() {
+        return Some(Refusal {
+            file,
+            reason: "找不到这个文件。".to_string(),
+        });
+    }
+
+    if !verse_core::looks_like_audio(path) {
+        return Some(Refusal {
+            file,
+            reason: "看起来不是音频或视频文件。".to_string(),
+        });
+    }
+
+    None
+}
+
+/// One model, as the panel shows it.
+///
+/// Carries what a person needs to choose rather than what the downloader
+/// needs: a name, a sentence, a size, and whether it is already here.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelChoice {
+    pub id: String,
+    /// The catalogue's own `display_name`, verbatim.
+    ///
+    /// Verbatim matters: the FunASR licence requires the name be retained as
+    /// upstream spells it, so this is passed through rather than tidied.
+    pub name: String,
+    /// `null` for a catalogue written before descriptions existed.
+    pub description: Option<String>,
+    /// Whether every file is on disk at its expected size.
+    pub present: bool,
+    /// What the download would be, from the catalogue's declared sizes. Not
+    /// what is on disk — the panel is telling a person what choosing this
+    /// costs, and that is the same number before and after fetching it.
+    pub bytes: u64,
+    /// The engine used when the user expresses no preference. Sent rather than
+    /// hardcoded in the window, so the default is decided in one place.
+    pub default: bool,
+}
+
+/// One row of the file list.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntryView {
+    /// The file's own name, not its path — a full path is too long to show and
+    /// never what the user needs to read.
+    pub name: String,
+    pub state: EntryState,
+    /// Which engine this file was handed to.
+    ///
+    /// The engine can be changed between files, so a list of results is not
+    /// necessarily a list from one recogniser. Saying which is which is the
+    /// difference between a mixed list and a misleading one.
+    pub engine: String,
+    /// Whether there is a file to delete for this row.
+    ///
+    /// Carried rather than inferred from the state, because a finished
+    /// transcript whose automatic save was refused has no file — and offering
+    /// to delete it would offer something that cannot be done.
+    pub has_result: bool,
+}
+
+/// What a row is doing, as a word rather than a screen.
+///
+/// The list does not need the whole screen of a file it is not showing; it
+/// needs to know which of five things the row is doing, so it can say so in a
+/// few characters.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EntryState {
+    Queued,
+    Working,
+    Done,
+    Failed,
+    NeedsModel,
+}
+
+impl EntryView {
+    fn of(entry: &FileEntry) -> Self {
+        Self {
+            name: entry.label(),
+            engine: entry.engine.clone(),
+            has_result: matches!(&entry.screen, Screen::Done(done) if done.exported.is_some()),
+            state: match entry.screen {
+                Screen::Queued { .. } => EntryState::Queued,
+                Screen::Working(_) => EntryState::Working,
+                Screen::Done(_) => EntryState::Done,
+                Screen::Failed(_) => EntryState::Failed,
+                Screen::NeedsModel { .. } => EntryState::NeedsModel,
+                Screen::Empty => EntryState::Queued,
+            },
+        }
+    }
 }
 
 /// How a model download is going, in the form the window reads.
@@ -163,6 +387,17 @@ pub enum DownloadView {
         received_bytes: u64,
         /// `null` when the host did not say how large the file is.
         total_bytes: Option<u64>,
+        /// The same two numbers for the *model*, not the file in flight.
+        ///
+        /// A model is several files and the downloader pulls them one at a
+        /// time, so its own figures fill up once per file: Qwen3-ASR showed
+        /// "44 MB" and looked finished while it was on its first of five. A
+        /// person who chose a 987 MB model is watching the model.
+        ///
+        /// `null` when the reading does not know — the state carries one file's
+        /// worth and has no catalogue to add the rest up from.
+        model_received_bytes: Option<u64>,
+        model_total_bytes: Option<u64>,
     },
     Verifying,
     Ready,
@@ -184,6 +419,10 @@ impl From<&verse_model::DownloadState> for DownloadView {
                 file: file.clone(),
                 received_bytes: *received,
                 total_bytes: *total,
+                // Not knowable here: this conversion sees one file's state and
+                // has no catalogue. The caller that does adds them.
+                model_received_bytes: None,
+                model_total_bytes: None,
             },
             DownloadState::Verifying => DownloadView::Verifying,
             DownloadState::Ready => DownloadView::Ready,
@@ -203,15 +442,29 @@ impl From<&verse_model::DownloadState> for DownloadView {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ScreenView {
     Empty,
+    /// Waiting for the job slot.
+    Queued { file: String },
     NeedsModel {
         file: String,
-        model: String,
+        /// The engine's *id*, not its display name.
+        ///
+        /// This carried the display name's slot while actually holding the id,
+        /// so the window rendered `sensevoice` at a person. The window has the
+        /// model list and resolves the name from it; sending the id and saying
+        /// so is the honest version.
+        model_id: String,
         download: DownloadView,
     },
+    #[serde(rename_all = "camelCase")]
     Working {
         file: String,
         /// True once the user has asked to stop and the job has not yet.
         stopping: bool,
+        /// Carried on the screen as well as sent incrementally, so that
+        /// switching to a running file shows its bar where it actually is
+        /// rather than at zero until the next tick.
+        elapsed_ms: u64,
+        fraction: Option<f32>,
     },
     #[serde(rename_all = "camelCase")]
     Done {
@@ -261,18 +514,23 @@ fn file_label(path: &std::path::Path) -> String {
 pub fn view_of(screen: &Screen) -> ScreenView {
     match screen {
         Screen::Empty => ScreenView::Empty,
+        Screen::Queued { input } => ScreenView::Queued {
+            file: file_label(input),
+        },
         Screen::NeedsModel {
             input,
             model,
             download,
         } => ScreenView::NeedsModel {
             file: file_label(input),
-            model: model.clone(),
+            model_id: model.clone(),
             download: download.into(),
         },
         Screen::Working(working) => ScreenView::Working {
             file: file_label(&working.input),
             stopping: working.stopping,
+            elapsed_ms: working.position.as_millis() as u64,
+            fraction: working.fraction,
         },
         Screen::Done(done) => ScreenView::Done {
             file: file_label(&done.input),
@@ -290,14 +548,16 @@ pub fn view_of(screen: &Screen) -> ScreenView {
 /// Tell the window what the state currently looks like.
 ///
 /// Used after anything that moves the state outside the bus — a command, or
-/// the initial load.
-pub fn push_screen(app: &AppHandle) {
+/// the initial load. It sends everything rather than an increment because a
+/// command may have moved the list, the selection and the screen together, and
+/// three updates where one will do is three chances to be out of order.
+pub fn push_state(app: &AppHandle) {
     let app_state = app.state::<App>();
     let state = app_state.state.lock().expect("state mutex poisoned");
     let _ = app.emit(
         UPDATE,
-        Update::Screen {
-            screen: view_of(state.screen()),
+        Update::Snapshot {
+            state: StateView::of(&state),
         },
     );
 }
@@ -313,45 +573,59 @@ pub fn spawn_forwarder(app: AppHandle, subscription: Subscription) {
             continue;
         };
 
-        let (update, unsaved) = {
+        let (update, follow, unsaved) = {
             let app_state = app.state::<App>();
             let mut state = app_state.state.lock().expect("state mutex poisoned");
 
             // One match rather than two: `Applied::Segment` carries the segment
             // by value, so matching twice would move out of it the first time.
+            //
+            // Three slots because two of the arms have two things to say: a
+            // change to a shown file moves both the pane and its row, and
+            // switching files moves the pane and the selection. Slot order is
+            // send order.
             match state.apply(&event) {
-                Applied::Nothing => (None, None),
+                Applied::Nothing => (None, None, None),
+
                 Applied::Screen => {
                     let update = Some(Update::Screen {
                         screen: view_of(state.screen()),
                     });
-
-                    // The finished transcript, if it has just arrived and
-                    // nobody has written it anywhere. Taken here and written
-                    // below, and deliberately not written *here*: this holds
-                    // the state lock, and a save into a synchronised Documents
-                    // folder can take long enough to notice.
-                    let unsaved = state.finished().and_then(|done| {
-                        done.exported
-                            .is_none()
-                            .then(|| (done.input.clone(), done.transcript.clone()))
-                    });
-
-                    (update, unsaved)
+                    // The row for the file being shown carries its state, so a
+                    // file that just finished is a row that just changed.
+                    let follow = Some(roster_of(&state));
+                    // Taken here and written *below*, deliberately: the write
+                    // happens outside the state lock, and a save into a
+                    // synchronised Documents folder can take long enough to
+                    // notice.
+                    (update, follow, state.awaiting_save())
                 }
-                Applied::Segment(Segment { start, end, text, .. }) => (
-                    Some(Update::Segment {
-                        start_ms: start.as_millis() as u64,
-                        end_ms: end.as_millis() as u64,
-                        text,
+
+                Applied::Roster => (Some(roster_of(&state)), None, state.awaiting_save()),
+
+                Applied::Selected => (
+                    Some(Update::Selected {
+                        screen: view_of(state.screen()),
+                        segments: segments_of(&state),
                     }),
+                    Some(roster_of(&state)),
                     None,
                 ),
-                Applied::Cleared => (Some(Update::Cleared), None),
-                Applied::Progress { position, .. } => (
+
+                Applied::Segment(segment) => (
+                    Some(Update::Segment(SegmentView::from(&segment))),
+                    None,
+                    None,
+                ),
+
+                Applied::Cleared => (Some(Update::Cleared), None, None),
+
+                Applied::Progress { position, fraction } => (
                     Some(Update::Progress {
                         elapsed_ms: position.as_millis() as u64,
+                        fraction,
                     }),
+                    None,
                     None,
                 ),
             }
@@ -362,11 +636,27 @@ pub fn spawn_forwarder(app: AppHandle, subscription: Subscription) {
         if let Some(update) = update {
             let _ = app.emit(UPDATE, update);
         }
+        if let Some(follow) = follow {
+            let _ = app.emit(UPDATE, follow);
+        }
 
-        if let Some((input, transcript)) = unsaved {
-            autosave(&app, &input, &transcript);
+        if let Some((index, input, transcript)) = unsaved {
+            autosave(&app, index, &input, &transcript);
         }
     });
+}
+
+/// The list, as the window reads it.
+fn roster_of(state: &AppState) -> Update {
+    Update::Roster {
+        entries: state.files().iter().map(EntryView::of).collect(),
+        selected: state.selected(),
+    }
+}
+
+/// The segments of the file being shown.
+fn segments_of(state: &AppState) -> Vec<SegmentView> {
+    state.segments().iter().map(SegmentView::from).collect()
 }
 
 /// Write a finished transcript out, and tell the window what happened.
@@ -376,7 +666,11 @@ pub fn spawn_forwarder(app: AppHandle, subscription: Subscription) {
 /// that did the recognition: the worker would race the forwarder, and the
 /// screen would end up recording a save that had not happened yet, or losing
 /// one that had.
-fn autosave(app: &AppHandle, input: &std::path::Path, transcript: &Transcript) {
+///
+/// By index rather than by screen: the file that finished is not necessarily
+/// the one on screen, and the user may click elsewhere while the write is in
+/// flight.
+fn autosave(app: &AppHandle, index: usize, input: &std::path::Path, transcript: &Transcript) {
     let roots = verse_store::Roots::from_env();
     let rendered = verse_core::ExportFormat::Srt.render(transcript);
 
@@ -387,19 +681,49 @@ fn autosave(app: &AppHandle, input: &std::path::Path, transcript: &Transcript) {
         &rendered,
     );
 
-    {
+    let engine = {
         let app_state = app.state::<App>();
         let mut state = app_state.state.lock().expect("state mutex poisoned");
 
-        match outcome {
-            crate::autosave::Saved::Written(path) => state.note_exported(path),
-            crate::autosave::Saved::Refused(why) => state.note_save_failed(why),
+        let engine = state
+            .files()
+            .get(index)
+            .map(|entry| entry.engine.clone())
+            .unwrap_or_default();
+
+        match &outcome {
+            crate::autosave::Saved::Written(path) => state.note_exported(index, path.clone()),
+            crate::autosave::Saved::Refused(why) => state.note_save_failed(index, why.clone()),
         }
+
+        engine
+    };
+
+    // So the next launch can find this. Only when it was actually written:
+    // an entry pointing at a file that is not there is not history, and
+    // `History::prune` would drop it on the next read anyway.
+    if let crate::autosave::Saved::Written(path) = &outcome {
+        let history_path = verse_store::data_dir(&roots).join("history.json");
+        let mut history = verse_store::History::load(&history_path);
+
+        history.record(verse_store::Past {
+            input: input.to_path_buf(),
+            output: path.clone(),
+            engine,
+            finished_at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|since| since.as_millis() as u64)
+                .unwrap_or(0),
+        });
+
+        // Best effort, like the transcript itself: the result is on disk and
+        // the record of it is a convenience.
+        let _ = history.save(&history_path);
     }
 
     // So the screen gains the path or the reason. Without this the window would
     // show the transcript and never mention either.
-    push_screen(app);
+    push_state(app);
 }
 
 // ---------------------------------------------------------------- from the window
@@ -411,7 +735,7 @@ fn autosave(app: &AppHandle, input: &std::path::Path, transcript: &Transcript) {
 pub fn start(app: &AppHandle, input: std::path::PathBuf, models_dir: std::path::PathBuf) {
     let (job, cancel) = {
         let app_state = app.state::<App>();
-        let id = JobId(app_state.next_job.fetch_add(1, Ordering::Relaxed));
+        let id = app_state.claim_id();
         let cancel = CancelToken::new();
 
         let mut running = app_state.job.lock().expect("job mutex poisoned");
@@ -515,11 +839,18 @@ mod tests {
     }
 
     #[test]
-    fn a_working_screen_carries_the_file_name_and_the_stopping_flag() {
+    fn a_working_screen_carries_the_file_name_the_flag_and_where_the_bar_is() {
         let value = serde_json::to_value(Update::Screen {
             screen: ScreenView::Working {
                 file: "会议录音.m4a".to_string(),
                 stopping: true,
+                elapsed_ms: 12_500,
+                // A half, because it is exact in binary. The fraction is an
+                // `f32` and JSON numbers are `f64`, so a tenth would arrive
+                // widened to 0.10000000149011612 — harmless for a bar, but it
+                // would make this assertion about floating point rather than
+                // about the field name it is testing.
+                fraction: Some(0.5),
             },
         })
         .expect("serializes");
@@ -528,18 +859,38 @@ mod tests {
             value,
             json!({
                 "kind": "screen",
-                "screen": { "kind": "working", "file": "会议录音.m4a", "stopping": true }
+                "screen": { "kind": "working", "file": "会议录音.m4a", "stopping": true,
+                            "elapsedMs": 12_500, "fraction": 0.5 }
             })
         );
     }
 
     #[test]
+    fn a_working_screen_with_no_known_length_sends_a_null_fraction() {
+        // `null` and `0.0` have to be distinguishable on the wire: one means
+        // "no number is known" and the other means "at the beginning". The
+        // window renders them differently — an indeterminate bar against one
+        // sitting at zero — so a collapsed distinction would be a lie the
+        // frontend could not detect.
+        let value = serde_json::to_value(Update::Progress {
+            elapsed_ms: 0,
+            fraction: None,
+        })
+        .expect("serializes");
+
+        assert_eq!(
+            value,
+            json!({ "kind": "progress", "elapsedMs": 0, "fraction": null })
+        );
+    }
+
+    #[test]
     fn a_segment_uses_camel_case_milliseconds() {
-        let value = serde_json::to_value(Update::Segment {
+        let value = serde_json::to_value(Update::Segment(SegmentView {
             start_ms: 1500,
             end_ms: 3200,
             text: "开放时间".to_string(),
-        })
+        }))
         .expect("serializes");
 
         assert_eq!(
@@ -558,10 +909,13 @@ mod tests {
         // `rename_all` on an enum renames its variants. It does not touch
         // their fields, which is the whole trap.
         let value = serde_json::to_value(Update::Download {
+            model: "sensevoice".to_string(),
             download: DownloadView::Fetching {
                 file: "model.onnx".to_string(),
                 received_bytes: 1024,
                 total_bytes: Some(2048),
+                model_received_bytes: Some(1024),
+                model_total_bytes: Some(4096),
             },
         })
         .expect("serializes");
@@ -602,13 +956,17 @@ mod tests {
 
         let samples = vec![
             Update::Download {
+                model: "sensevoice".to_string(),
                 download: DownloadView::Fetching {
                     file: "a.onnx".to_string(),
                     received_bytes: 1,
                     total_bytes: None,
+                    model_received_bytes: None,
+                    model_total_bytes: None,
                 },
             },
             Update::Download {
+                model: "sensevoice".to_string(),
                 download: DownloadView::Ready,
             },
             Update::Screen {
@@ -622,14 +980,54 @@ mod tests {
                 screen: ScreenView::Working {
                     file: "a.wav".to_string(),
                     stopping: true,
+                    elapsed_ms: 1,
+                    fraction: Some(0.5),
                 },
             },
-            Update::Segment {
+            Update::Screen {
+                screen: ScreenView::Queued {
+                    file: "a.wav".to_string(),
+                },
+            },
+            Update::Roster {
+                entries: vec![EntryView {
+                    name: "a.wav".to_string(),
+                    state: EntryState::Working,
+                    engine: "sensevoice".to_string(),
+                    has_result: false,
+                }],
+                selected: Some(0),
+            },
+            Update::Selected {
+                screen: ScreenView::Empty,
+                segments: vec![SegmentView {
+                    start_ms: 0,
+                    end_ms: 1,
+                    text: "x".to_string(),
+                }],
+            },
+            Update::Snapshot {
+                state: StateView {
+                    screen: ScreenView::Empty,
+                    entries: vec![EntryView {
+                        name: "a.wav".to_string(),
+                        state: EntryState::Done,
+                        engine: "sensevoice".to_string(),
+                        has_result: true,
+                    }],
+                    selected: None,
+                    segments: Vec::new(),
+                },
+            },
+            Update::Segment(SegmentView {
                 start_ms: 0,
                 end_ms: 1,
                 text: "x".to_string(),
+            }),
+            Update::Progress {
+                elapsed_ms: 1,
+                fraction: None,
             },
-            Update::Progress { elapsed_ms: 1 },
             Update::Cleared,
         ];
 
@@ -637,6 +1035,22 @@ mod tests {
         for sample in samples {
             keys_with_underscores(&serde_json::to_value(sample).expect("serializes"), &mut found);
         }
+
+        // A command return value rather than a bus update, reaching the same
+        // window through the same serde. Leaving it out of this sweep is how a
+        // `model_id` arrives as `model_id`.
+        keys_with_underscores(
+            &serde_json::to_value(ModelChoice {
+                id: "sensevoice".to_string(),
+                name: "SenseVoice-Small".to_string(),
+                description: Some("d".to_string()),
+                present: true,
+                bytes: 1,
+                default: true,
+            })
+            .expect("serializes"),
+            &mut found,
+        );
 
         assert!(found.is_empty(), "snake_case keys on the wire: {found:?}");
     }

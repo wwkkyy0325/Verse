@@ -4,9 +4,11 @@
 //! so memory use is bounded by chunk size rather than file length — the same
 //! property the pipeline relies on everywhere else.
 
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::{Child, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -35,6 +37,14 @@ pub struct FfmpegDecoder {
     /// fills the stderr pipe, blocks on the write, and never closes stdout — so
     /// the EOF this side is waiting for can never arrive.
     stderr: Option<JoinHandle<String>>,
+    /// The file's length in milliseconds, as ffmpeg reported it, or zero while
+    /// it has not said.
+    ///
+    /// Shared with the drain thread, which is the only thing that reads
+    /// ffmpeg's output. Written once, early — the banner comes before any
+    /// audio — and read from [`FfmpegDecoder::total`] on the decoding thread
+    /// while both are running.
+    duration_millis: Arc<AtomicU64>,
 }
 
 impl FfmpegDecoder {
@@ -56,8 +66,19 @@ impl FfmpegDecoder {
 
         let mut child = Command::new(ffmpeg)
             .arg("-hide_banner")
+            // `info`, not `error`, and this is the whole reason the decoder can
+            // report progress at all: ffmpeg prints `Duration:` in its input
+            // banner, which is emitted at `info` and was therefore being thrown
+            // away. `-nostats` keeps the per-second counters off, so what
+            // arrives is the banner and any complaint — nothing that grows with
+            // the length of the file.
+            //
+            // Asking for a duration with a second ffmpeg pass was the
+            // alternative, and it would have cost a second read of the file to
+            // learn something this pass already knows.
+            .arg("-nostats")
             .arg("-loglevel")
-            .arg("error")
+            .arg("info")
             .arg("-i")
             .arg(path)
             // Ignore any video stream: this project only wants audio.
@@ -87,10 +108,29 @@ impl FfmpegDecoder {
 
         // Drain stderr from the moment the process starts, so a burst of
         // errors can never fill the pipe and stall ffmpeg.
-        let stderr = child.stderr.take().map(|mut pipe| {
+        let duration_millis = Arc::new(AtomicU64::new(0));
+        let observed = Arc::clone(&duration_millis);
+        let stderr = child.stderr.take().map(|pipe| {
             std::thread::spawn(move || {
                 let mut captured = String::new();
-                let _ = pipe.read_to_string(&mut captured);
+
+                // Line at a time rather than to EOF, because the length is
+                // wanted *while* the file is being decoded and the banner
+                // carrying it is the first thing ffmpeg says. Reading to the
+                // end would deliver it only once the job was over.
+                for line in BufReader::new(pipe).lines() {
+                    let Ok(line) = line else { break };
+
+                    if observed.load(Ordering::Relaxed) == 0 {
+                        if let Some(found) = parse_duration_line(&line) {
+                            observed.store(found.as_millis() as u64, Ordering::Relaxed);
+                        }
+                    }
+
+                    captured.push_str(&line);
+                    captured.push('\n');
+                }
+
                 captured
             })
         });
@@ -102,7 +142,25 @@ impl FfmpegDecoder {
             position: Duration::ZERO,
             finished: false,
             stderr,
+            duration_millis,
         })
+    }
+
+    /// How long the file is, as ffmpeg reported it.
+    ///
+    /// `None` until the banner has been read, and `None` forever for a stream
+    /// or container that declares no duration — including ffmpeg's own
+    /// `Duration: N/A`. Callers must treat both the same way, because they
+    /// cannot be told apart and a progress bar must not invent a denominator.
+    ///
+    /// Inherent rather than on [`AudioSource`]: this is a property of *this*
+    /// decoder, and putting it on the trait would make every future source
+    /// answer a question only ffmpeg can.
+    pub fn total(&self) -> Option<Duration> {
+        match self.duration_millis.load(Ordering::Relaxed) {
+            0 => None,
+            millis => Some(Duration::from_millis(millis)),
+        }
     }
 
     /// Reap the child and surface its error output if it failed.
@@ -123,7 +181,7 @@ impl FfmpegDecoder {
         if status.success() {
             Ok(())
         } else {
-            let detail = stderr.trim();
+            let detail = complaint(&stderr);
             Err(Error::new(
                 ErrorKind::Decode,
                 if detail.is_empty() {
@@ -134,6 +192,63 @@ impl FfmpegDecoder {
             ))
         }
     }
+}
+
+/// The length ffmpeg announces, from a line like
+/// `  Duration: 00:00:05.59, bitrate: 256 kb/s`.
+///
+/// `Duration: N/A` — a stream with no declared length — answers `None`, the
+/// same as a banner that never arrived. That is deliberate: the two are
+/// indistinguishable to a caller and must lead to the same behaviour, which is
+/// a progress bar with no number in it.
+fn parse_duration_line(line: &str) -> Option<Duration> {
+    let rest = line.trim_start().strip_prefix("Duration:")?;
+    let stamp = rest.trim_start().split(',').next()?.trim();
+
+    let mut parts = stamp.split(':');
+    let hours: f64 = parts.next()?.trim().parse().ok()?;
+    let minutes: f64 = parts.next()?.trim().parse().ok()?;
+    let seconds: f64 = parts.next()?.trim().parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+
+    // `from_secs_f64` panics on a negative or non-finite value, and this is
+    // parsing text a program wrote, so it is checked rather than trusted.
+    let total = hours * 3600.0 + minutes * 60.0 + seconds;
+    (total.is_finite() && total >= 0.0).then(|| Duration::from_secs_f64(total))
+}
+
+/// What ffmpeg said that is worth repeating when it failed.
+///
+/// ffmpeg is asked for `info` so its banner is emitted — that is where the
+/// duration comes from — and the banner would otherwise be the first thing a
+/// person reads in an error message, pushing the actual complaint off the end.
+/// The banner's shapes are few and stable; everything else is kept, because the
+/// reason for a failure is usually a line nobody anticipated.
+fn complaint(stderr: &str) -> String {
+    let kept: Vec<&str> = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !is_banner(line))
+        .collect();
+
+    kept.join("\n")
+}
+
+/// Whether a line belongs to ffmpeg's description of the input rather than to
+/// an account of what went wrong.
+fn is_banner(line: &str) -> bool {
+    const SHAPES: [&str; 6] = [
+        "Input #",
+        "Output #",
+        "Duration:",
+        "Stream #",
+        "Stream mapping:",
+        "Press [q]",
+    ];
+
+    SHAPES.iter().any(|shape| line.starts_with(shape)) || line.contains("Guessed Channel Layout")
 }
 
 impl AudioSource for FfmpegDecoder {
@@ -193,5 +308,87 @@ impl Drop for FfmpegDecoder {
         // reaped and this is a no-op.
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One line of ffmpeg's real banner, copied from this machine's ffmpeg
+    /// 8.0.1 reading `models/sensevoice/zh.wav`. The leading spaces are
+    /// ffmpeg's, and the shape is what the parser has to survive.
+    const REAL_LINE: &str = "  Duration: 00:00:05.59, bitrate: 256 kb/s";
+
+    #[test]
+    fn the_banner_line_ffmpeg_actually_prints_is_understood() {
+        assert_eq!(
+            parse_duration_line(REAL_LINE),
+            Some(Duration::from_secs_f64(5.59))
+        );
+    }
+
+    #[test]
+    fn hours_are_not_dropped() {
+        // A two-hour recording is the case that would expose a parser counting
+        // only minutes and seconds — and it is also the case where a wrong
+        // denominator is least noticeable in a bar.
+        assert_eq!(
+            parse_duration_line("  Duration: 01:30:00.00, bitrate: 128 kb/s"),
+            Some(Duration::from_secs(5400))
+        );
+    }
+
+    #[test]
+    fn a_stream_with_no_declared_length_answers_nothing() {
+        // ffmpeg's own words for "no length", and the one input where a bar
+        // must not invent a denominator.
+        assert_eq!(parse_duration_line("  Duration: N/A, start: 0.000000"), None);
+    }
+
+    #[test]
+    fn lines_that_are_not_the_banner_are_ignored() {
+        // The parser sees every line ffmpeg writes, so anything that is not a
+        // duration has to come back empty rather than nearly right.
+        for line in [
+            "Input #0, wav, from 'zh.wav':",
+            "  Stream #0:0: Audio: pcm_s16le, 16000 Hz, mono, s16, 256 kb/s",
+            "Stream mapping:",
+            "",
+            "  Duration:",
+            "  Duration: nonsense, bitrate: 0 kb/s",
+        ] {
+            assert_eq!(parse_duration_line(line), None, "parsed {line:?}");
+        }
+    }
+
+    #[test]
+    fn a_failure_message_does_not_begin_with_the_banner() {
+        // Raising the log level to `info` puts ffmpeg's description of the
+        // input on the same stream as its complaints, and the whole point of
+        // the error message is the complaint.
+        let stderr = "\
+Input #0, wav, from 'zh.wav':
+  Duration: 00:00:05.59, bitrate: 256 kb/s
+  Stream #0:0: Audio: pcm_s16le, 16000 Hz, mono, s16, 256 kb/s
+Stream mapping:
+  Stream #0:0 -> #0:0 (pcm_s16le (native) -> pcm_f32le (native))
+zh.wav: Invalid data found when processing input
+";
+
+        let message = complaint(stderr);
+
+        assert_eq!(message, "zh.wav: Invalid data found when processing input");
+        assert!(
+            !message.contains("Duration"),
+            "the banner is not a complaint: {message}"
+        );
+    }
+
+    #[test]
+    fn a_failure_with_nothing_but_a_banner_says_nothing() {
+        // Which leaves the exit status as the whole account, and that is better
+        // than an error message made of the input description.
+        assert_eq!(complaint("Input #0, wav, from 'x':\n  Duration: N/A\n"), "");
     }
 }

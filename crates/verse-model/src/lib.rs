@@ -17,5 +17,5 @@ pub mod state;
 
 pub use catalog::{Catalog, Mirror, ModelFile, ModelSpec};
 pub use cleanup::{Partial, Usage};
-pub use downloader::Downloader;
+pub use downloader::{file_is_complete, sha256_file, Downloader};
 pub use state::DownloadState;

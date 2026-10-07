@@ -37,7 +37,7 @@ Two delivery modes:
 | C3 | Chinese primary | Rules out Whisper-family and Moonshine (see §5.1) |
 | C4 | CPU-only, 2013+ baseline | Model must run at usable speed without GPU |
 | C5 | Must be obtainable from mainland China | Multi-source download, §6 |
-| C6 | Zero configuration for end users | Auto model fetch, hardware auto-adaptation |
+| C6 | Zero configuration for end users | Auto model fetch, hardware auto-adaptation. **Amended 2026-10-07:** the window now *shows* the engine and lets it be changed. What C6 protects is that the default path requires no decision, and it still does not — the engine is chosen before anybody looks and is shown as chosen. What changed is that a person who wants to choose can now see what the choice is, which `ui-design.md` §9's licence obligation required anyway. |
 
 ## 4. Architecture
 
@@ -767,7 +767,7 @@ Absent AVX2 means: fall back to the SSE kernel and restrict the model tier to sm
 |-------|-------------|--------------|
 | **P0** | Framework: workspace, domain types, event bus, registry, router, pipeline trait | Unit tests: events reach subscribers by filter; registry resolves a registered factory; a stub pipeline runs a job to completion while emitting progress and honoring cancellation |
 | **P1a** | core + CLI + model fetcher | `verse model fetch` retrieves a model via failover; `verse transcribe a.mp3 -o a.srt` produces correct subtitles |
-| P1b | desktop window (Tauri + Svelte; this said "slint" until it was corrected) | Drag file → progress → result → export, no terminal involved |
+| P1b | desktop window (Tauri + Svelte; this said "slint" until it was corrected) | Drag file → progress → result → export, no terminal involved. The **progress** half of that was not built until 2026-10-07 — see `ui-design.md` §2 for why, and for what made it possible |
 | P2a | Loopback capture + streaming subtitles | Play a video on Windows; floating window shows text live |
 | P2b | Translation | Bilingual zh/en subtitles |
 

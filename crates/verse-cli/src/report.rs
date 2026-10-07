@@ -151,16 +151,21 @@ pub struct JobRequest {
 
 /// How far a running job has got.
 ///
-/// **No percentage, deliberately.** The decoder does not report a total length —
-/// the pipeline publishes `fraction: 0.0` for exactly that reason — so a ratio
-/// here would be a fabricated number. Seconds elapsed and segments found are
-/// what is actually known; a client that wants a fraction can compare against
-/// its own expectation.
+/// **The fraction is real now.** This used to say there could be none, because
+/// the decoder was believed not to report a total length and the pipeline
+/// published `fraction: 0.0` to match. The total is in fact already on
+/// ffmpeg's stderr — the banner of the pass that decodes the file — so the
+/// pipeline publishes the ratio, and this carries it.
+///
+/// It is `null` rather than absent when the length is unknown, and a client
+/// must treat that as "no number", not as zero. A stream with no declared
+/// length reports `Duration: N/A` and lands here.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Progress {
     pub segments: usize,
     pub position_ms: u64,
+    pub fraction: Option<f32>,
 }
 
 /// What `verse serve` is and what it is doing.

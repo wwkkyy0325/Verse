@@ -4,16 +4,19 @@
     {
       "id": "sensevoice",
       "display_name": "SenseVoice-Small (zh, en, yue, ja, ko)",
+      "description": "体积最小、速度最快，标点也最准，是默认选择。普通话、粤语、英语、日语、韩语都能识别。",
       "files": [
         {
           "remote": "model.int8.onnx",
           "local": "model.int8.onnx",
-          "size": 239233841
+          "size": 239233841,
+          "sha256": "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51"
         },
         {
           "remote": "tokens.txt",
           "local": "tokens.txt",
-          "size": 315894
+          "size": 315894,
+          "sha256": "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc"
         }
       ],
       "mirrors": [
@@ -32,11 +35,13 @@
     {
       "id": "silero-vad",
       "display_name": "Silero VAD",
+      "description": "判断录音里哪里在说话、哪里是静音。识别流程依赖它，它不是一个可选的识别模型。",
       "files": [
         {
           "remote": "model.onnx",
           "local": "silero_vad.onnx",
-          "size": 2327524
+          "size": 2327524,
+          "sha256": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"
         }
       ],
       "mirrors": [
@@ -55,16 +60,19 @@
     {
       "id": "qwen3-asr",
       "display_name": "Qwen3-ASR-0.6B (LLM decoder, 52 languages)",
+      "description": "识别更准一些，代价是约四倍体积和四倍耗时。支持 52 种语言和方言，是唯一能接受专有名词表的模型。",
       "files": [
         {
           "remote": "conv_frontend.onnx",
           "local": "conv_frontend.onnx",
-          "size": 44148281
+          "size": 44148281,
+          "sha256": "d22dc4423e0940e49884e903d2ea2f7e5567c14fc1aed97e4e26d6b8f208ef9e"
         },
         {
           "remote": "encoder.int8.onnx",
           "local": "encoder.int8.onnx",
-          "size": 182491662
+          "size": 182491662,
+          "sha256": "60748d3e6744a57c9c91e1b17424a6c2990567e8adceb0783940c03ed98fa9d9"
         },
         {
           "remote": "decoder.int8.onnx",

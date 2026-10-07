@@ -199,15 +199,25 @@ timecodes.
 
 Two deliberate departures from the plan:
 
-- **No progress bar.** The decoder does not report a total length, and getting
-  one means a probe pass over the file before decoding it. Elapsed time and
-  segment count are honest and free.
+- **No progress bar** — *reversed 2026-10-07*. The reason recorded here was
+  that "the decoder does not report a total length, and getting one means a
+  probe pass over the file before decoding it". The second half is true of a
+  probe pass and false of this: ffmpeg prints `Duration:` in the banner of the
+  decode that is already happening, at `info` level — which `-loglevel error`
+  was suppressing. Measured on this machine: **0 bytes** of stderr as it was
+  called, **808 bytes** with `-nostats -loglevel info`, including
+  `Duration: 00:00:05.59`. There is now a real percentage, and a bar with no
+  number in it when a stream declares no length. See
+  `tasks/single-page-window.md`.
 - **Auto-follow stops when the user scrolls up.** Following new text is right
   until someone is reading; fighting them after that is worse than not
   following at all.
 
 **Verify:** pending a human — drop a file, watch it fill in, cancel it
-mid-run. The parts a machine can check are in step 6.
+mid-run. The parts a machine can check are in step 6. The *plumbing* behind the
+bar is now machine-checked too (`verse-audio`'s duration parser against real
+ffmpeg, and the fraction through to the wire); what still needs a person is
+whether the bar moves the way it looks like it should.
 
 ## [ ] 10. Done screen — export
 

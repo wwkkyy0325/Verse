@@ -43,7 +43,15 @@ stated as rules rather than guidelines.
 
 ## 2. Screens
 
-Five, and no more, in P1b.
+**One page, four regions.** This section used to open with "Five, and no more,
+in P1b", describing five screens that replaced one another. That is no longer the
+shape: the window is a single page — a header, a sidebar holding the models and
+the files this session has been given, and a detail region — and what follows is
+the set of states that **detail region** can be in for the file it is showing.
+
+The enum is unchanged, and that is the point of how the change was made: a
+screen was always the story of one *file*, and what changed is that there can be
+more than one of them alive at once. Each file carries its own.
 
 ```
                           ┌────────────────────────┐
@@ -89,6 +97,12 @@ downloading.
 enum Screen {
     Empty,
 
+    /// Waiting for the job slot, because another file has it.
+    ///
+    /// Not `Working`: a queued file has no job to cancel, and pretending it
+    /// did would make pressing 取消 on the waiting file stop the running one.
+    Queued { input },
+
     /// Blocking: no usable model. Reuses verse-model's own state machine,
     /// so the UI does not define a second, drifting copy of it.
     NeedsModel { input, model, download },
@@ -107,6 +121,38 @@ enum Screen {
 what P5 asks for, and it is why the pipeline emits `TranscriptSegment` as it
 goes rather than only at the end.
 
+**The file list, and why it is the shape it is.** Each file carries its own
+`Screen` and the window shows one of them at a time, so switching files is a
+change of which entry is *shown* and never a change of what any entry *is*. A
+file that is not being shown still receives its own output: the state routes
+events by which entry holds the job, not by which is selected, and only the
+shown file's events are sent on to the window. A file that finishes in the
+background is still written out.
+
+**And it survives the window closing.** The list used to be session-only, which
+meant the `.srt` files stayed in the output folder while the record of them did
+not — somebody who transcribed a meeting last week could not reach it from
+inside the program. `verse-store::history` writes the roster down: which file,
+which engine, when, and where the result went. It holds a pointer rather than a
+copy, because the `.srt` on disk **is** the result and a second transcript would
+be a second thing to drift from it. Restoring one means parsing that file back
+(`verse_core::export::parse_srt`), into the same reading pane the live
+transcript uses — one view, not a second one with "viewer" in its name.
+
+**A progress bar, and what changed.** There was none, and step 9 of
+`tasks/p1b-gui.md` recorded the reason: the decoder reported no total length, and
+learning one would have meant a second pass over the file. That reasoning was
+sound about a *probe pass* and wrong about this case — ffmpeg prints `Duration:`
+in the banner of the pass that is already decoding, at `info` level, where
+`-loglevel error` had been suppressing it. Measured on this machine: 0 bytes of
+stderr as it was called, 808 bytes with `-nostats -loglevel info`, including
+`Duration: 00:00:05.59`.
+
+So the fraction is real, and it is `Option`: a stream that declares no length
+reports `Duration: N/A` and gets a bar with no number in it rather than an
+invented one. The bar sits **beside** the growing transcript, never instead of
+it — P5 is unchanged and a bare bar would be a regression against it.
+
 **No phase field.** An earlier revision of this document had one, to label
 decoding apart from recognition. The event vocabulary carries no stage event,
 and adding one to `verse-core` to drive a label the user can act on in no way
@@ -124,22 +170,41 @@ second job on top of the first. The cost is up to a second of "正在停止…".
 One window. Minimum 640×480, default 900×640, remembers its size.
 
 ```
-┌──────────────────────────────────────────────────────┐
-│  Verse                          [降级提示]   [关于]  │  48
-├──────────────────────────────────────────────────────┤
-│                                                      │
-│                                                      │
-│                  main area                           │  flexible
-│                  (screen-dependent)                  │
-│                                                      │
-│                                                      │
-├──────────────────────────────────────────────────────┤
-│  status bar — only when Working or Failed            │  40
-└──────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│  Verse            正在转写… 已识别 12 段 · 01:24    [关于]   │  48
+├───────────────┬──────────────────────────────────────────────┤
+│  识别模型     │                                              │
+│  ● SenseVoice │   progress bar + 已识别 N 段                 │
+│    228 MB 已装│   ─────────────────────────────────────────  │
+│    描述…      │   [00:00] 文本…                              │
+│  ○ Qwen3-ASR  │   [00:04] 文本…                              │  flexible
+│    982 MB 需下│   [00:09] 文本…                              │
+│    描述…      │                                              │
+│ ───────────── │                                              │
+│  本次处理的文件│                                              │
+│   会议.m4a ✓  │                                              │
+│   讲座.mp3 ⟳  │                                              │
+│   [添加文件]  │                                              │
+├───────────────┴──────────────────────────────────────────────┤
+│  完成 · 共 128 段 · 已保存到 …       [另存为…]  [再来一个]   │  40
+└──────────────────────────────────────────────────────────────┘
 ```
 
-The status bar is reserved rather than created on demand, so content does not
-jump when a task starts. It is empty and collapsed when idle.
+The **sidebar** holds two things that used to be invisible or destructive: which
+engine is running — with a description, a size and whether it is installed —
+and every file this session has been given. The model used to be nowhere on
+screen at all, and a second file used to erase the first.
+
+The **footer** is reserved rather than created on demand, so content does not
+jump when a task starts. It is empty and collapsed when idle, and it only
+speaks for the file being shown.
+
+**The model control is visible and pre-selected.** This is the one place the
+window appears to contradict P2 and C6, and it does not: the default is chosen
+and shown as chosen, so the default path still involves no decision. A person
+who never touches it gets exactly what they got before. What changed is that
+somebody who *wants* to choose can now see what the choice is — which the
+licence in §9 requires anyway.
 
 **The degraded-hardware notice** is a dismissible one-line bar under the
 header, not a dialog. `verse-core::hardware` already produces the sentence;
@@ -217,7 +282,7 @@ upstream to wait on. Three are in use:
 |---|---|
 | `Button` | every screen |
 | `Dialog` | 关于 |
-| `Progress` | model download, transcribing |
+| `Progress` | model download, transcribing when the length is known |
 
 **Five more were taken and have since been removed** — `Card`, `ScrollArea`,
 `Separator`, `Alert` and `Sonner`. Each was chosen here for a screen that was
@@ -238,6 +303,12 @@ Two stay hand-written, because no component set has an opinion about them:
 **`DropZone`** — the dashed drop target, in three states: idle, hover, and
 active while a file is over it. It is the first thing the user meets and the
 entire first step of the interface, which is worth more than a styled box.
+
+**`ProgressBar`** — a bar with two modes, because a fraction may be unknown.
+`Progress` (the vendored component) draws the determinate case; the
+indeterminate one is hand-written, since no component set has an opinion about
+a bar that is saying "working, and I cannot tell you how far". Both are shown
+beside the growing transcript, never instead of it — P5.
 
 **`TranscriptView`** — a scroller of `[timecode] text` with auto-follow:
 during `Working` new segments scroll into view, but the moment the user
@@ -423,7 +494,12 @@ Stated so they do not creep in:
 
 - Settings screen. Configurable values exist in the pipeline already; exposing
   them is a later decision, and the default path must not need them.
-- Batch / queue of multiple files. One file at a time.
+- Batch / queue of multiple files. **Amended:** the window now keeps a list
+  of the files it has been given, and processes them **one at a time**. What
+  is still out of scope is concurrency — two jobs at once — because the
+  recogniser holds one model and the memory a second would cost is the thing
+  `design.md` C4's floor is about. The queue is what makes dropping a folder a
+  single gesture rather than a way to cancel your own work.
 - Transcript editing. The result is exported, not edited.
 - Live subtitles, translation, recording.
 - Custom title bar, tray icon, global hotkey — the latter is out of the

@@ -103,3 +103,32 @@ pub enum ModelState {
     Ready,
     Failed(String),
 }
+
+/// Containers ffmpeg can pull an audio track out of.
+///
+/// Here rather than beside either caller, because two callers need it and they
+/// must not disagree: the command line expands a directory into these, and the
+/// window refuses what is not one before it starts. A second copy is a second
+/// thing that can drift — as the service's route list already is.
+///
+/// **A proxy, not the truth.** ffmpeg is the only thing that actually knows,
+/// which is why the command line still attempts a file *named* on it whatever
+/// it is called. The window is stricter on purpose: somebody who drags the
+/// wrong thing should be told before waiting, not after. So a file with an
+/// unusual but decodable extension is refused by the window and accepted by
+/// the command line, and that is the intended difference rather than a bug.
+pub const AUDIO_EXTENSIONS: &[&str] = &[
+    "wav", "mp3", "mp2", "m4a", "m4b", "aac", "flac", "ogg", "oga", "opus", "wma", "amr", "aiff",
+    "aif", "caf", "ape", "wv", "mp4", "mkv", "mov", "webm", "avi", "ts",
+];
+
+/// Whether a path looks like something this program can decode.
+///
+/// Case-insensitive: `.MP3` is an mp3, and on Windows it usually is exactly
+/// that — a file whose name was capitalised by something that did not care.
+pub fn looks_like_audio(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .is_some_and(|extension| AUDIO_EXTENSIONS.contains(&extension.as_str()))
+}

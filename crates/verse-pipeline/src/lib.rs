@@ -379,10 +379,25 @@ impl Transcriber {
             bus.publish(Event::JobProgress {
                 id: job,
                 position: chunk.end(),
-                // The decoder does not report a total length, and adding a probe
-                // pass to get one would cost a second read of the file. The
-                // interface shows elapsed time and recognised segments instead.
-                fraction: 0.0,
+                // How far through the file, when ffmpeg said how long it is.
+                //
+                // This used to be a hardcoded zero, on the belief that the
+                // decoder reported no total. It does not have to: ffmpeg prints
+                // `Duration:` in the banner of the pass that is already
+                // decoding the file, so the denominator costs nothing. What it
+                // is *not* is a probe pass — that is what the earlier note
+                // correctly refused, and it was never necessary.
+                //
+                // A stream with no declared length still arrives as `None`, and
+                // the interface shows a bar with no number in it rather than
+                // inventing one.
+                // Asked every time round rather than once before the loop: the
+                // banner is parsed by another thread, and it may not have been
+                // read by the time the first chunks arrive. Reading it once
+                // would pin the whole job to whichever answer was ready first.
+                fraction: source.total().map(|total| {
+                    (chunk.end().as_secs_f64() / total.as_secs_f64()).clamp(0.0, 1.0) as f32
+                }),
             });
         }
 
