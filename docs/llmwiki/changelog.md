@@ -1369,3 +1369,81 @@ And one correction to a *test*: it opened 71 sockets expecting the connection ca
 to refuse some, and got none — TCP accepts a connection long before the server
 sees it, so the cap is only observable by sending a request. The refusal is a
 503 response, not a refused handshake.
+
+## 2026-10-07 — A pool of workers, sized from the machine and the model
+
+`verse serve` ran one worker, so four concurrent requests serialised. It now
+runs a pool whose size comes from a rule rather than a guess.
+
+The command line's `--jobs` deliberately defaults to 1, and its log gives the
+reason: *"the memory cost is real and invisible, so it is opted into rather than
+paid by everyone."* The service answers that objection by making the cost
+visible — `/health` reports the pool, its per-worker cost, the budget, and that
+the budget is an assumption — rather than by defaulting to 1.
+
+```
+per_worker_bytes = model_bytes + RUNTIME_OVERHEAD_BYTES
+pool = min(MEMORY_BUDGET_BYTES / per_worker_bytes, engine_threads)
+         .clamp(1, MAX_WORKERS)
+```
+
+**The budget is 2 GiB and it says what it is.** Reading the machine's RAM needs
+FFI and `unsafe` on every platform this project targets, and the project has
+neither, so the ceiling is a written assumption anchored to the 8 GB floor §3
+commits to — and it is reported to clients so they can disagree with it rather
+than merely obey it.
+
+**One thread budget for the whole pool**, which is an invariant rather than
+tidiness: the settings digest includes the resolved thread count, so unequal
+budgets would give workers different model identities and a job would be
+runnable on only some of them. It is the same `per_worker_threads` the command
+line's `--jobs` now calls, so the batch and the service cannot disagree.
+
+### The curve, and the two numbers that disagree
+
+24 jobs of one clip, SenseVoice, cache off, warming every worker before the
+measured batch so nothing has to be dropped afterwards:
+
+| N | total wall | median per job | peak RSS |
+|---|---|---|---|
+| 1 | 6.03 s | 249.0 ms | **361 MB** |
+| 2 | 3.51 s | 287.0 ms | 686 MB |
+| 4 | 2.43 s | 375.0 ms | 1324 MB |
+| 8 | 2.02 s | 589.5 ms | 2619 MB |
+
+**All four instrument checks passed before the curve was read.** `loads` equals
+N at every size. N=1 run twice gave 2.98 s and 3.01 s, agreeing within 1%, so
+the machine is quiet enough to read a curve on. N=1 held **361 MB** against the
+**347 MB** this project already recorded for the command line — within 4%, which
+is what anchors the memory sampler to a known-good reading. And N=1's median of
+249 ms lands inside the 240–310 ms band the service was already known to
+produce.
+
+**Throughput keeps improving; latency keeps getting worse.** Six workers finish
+three times as many jobs per second as one, while a single job takes a little
+under twice as long, because each worker holds fewer threads as the pool grows.
+Neither number alone describes the trade. The default of six is the pool the
+budget and the cores allow; `--workers` overrides it.
+
+`RUNTIME_OVERHEAD_BYTES` is set from that table rather than from an estimate:
+marginal cost per worker is (2619 − 361) / 7 = 322 MB against 239.5 MB of
+weights, so the overhead is about 82 MB. The rule's own per-worker figure is
+323.4 MB, landing on the measurement.
+
+Qwen3-ASR gets **two** workers where SenseVoice gets six. That is the rule
+working, not a shortfall.
+
+### Two mistakes worth recording
+
+**A test of mine was near-tautological.** It asserted that `digest(None)` equals
+`digest(Some(digest(None)))`, which holds for almost any resolution rule — and
+it passed when I deliberately broke `effective_threads` to resolve `Some(n)` as
+`n + 1`. The rewritten test asserts what actually decides the cache key: that
+the two spellings resolve to the same number. It fails under that falsification
+now, with `left: 16, right: 15`.
+
+**A constant I had guessed was wrong by a third.** The plan's arithmetic put the
+per-worker cost at 306.6 MB and predicted six workers from a 64 MiB overhead.
+The measurement said 322 MB marginal, so the overhead is ~82 MB and the constant
+is now 80 MiB. The prediction and the measurement agreed on six only by
+coincidence; they agree by construction now.

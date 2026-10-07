@@ -93,7 +93,7 @@ holds for almost any resolution rule, so it passed even when I deliberately brok
 what actually decides the cache key: that the two spellings **resolve to the same
 number**. It now fails under that falsification, with `left: 16, right: 15`.
 
-## [ ] 4. Measure the curve
+## [x] 4. Measure the curve
 
 Through the real service — the queue, the drain and the HTTP layer are part of
 what is changing. Every worker gets `floor(engine_threads / N)` threads, so
@@ -116,12 +116,62 @@ hides the load cost or lets it pass as a speedup.
 smallest N that wins already exceeds the budget. Then the default stays 1 and the
 negative result is written down, which is what the CLI did for `-j`.
 
-## [ ] 5. The default becomes the rule
+**Done. Not falsified.** 24 jobs of the same clip, SenseVoice, `noCache`:
+
+| N | total wall | median per job | loads | peak RSS |
+|---|---|---|---|---|
+| 1 | 6.03 s | 249.0 ms | 1 | **361 MB** |
+| 2 | 3.51 s | 287.0 ms | 2 | 686 MB |
+| 4 | 2.43 s | 375.0 ms | 4 | 1324 MB |
+| 8 | 2.02 s | 589.5 ms | 8 | 2619 MB |
+
+**The instrument first, and all four checks pass.** `loads` equals N at every
+size. N=1 run twice gave 2.98 s and 3.01 s, agreeing within 1% — the machine is
+quiet enough to read a curve on. N=1 held **361 MB** against the **347 MB** this
+project already recorded for the command line, within 4%, which is the anchor
+that says the memory sampler is reading the right thing. And N=1's median of
+249 ms lands in the 240–310 ms band the service was already known to produce.
+
+**The curve is the classic one, and the two numbers disagree.**
+
+- **Throughput keeps improving**: 24 jobs take 6.03 s at one worker and 2.02 s
+  at eight. The gains are 72%, then 44%, then 20% — steeply diminishing.
+- **Per-job latency keeps getting worse**: 249 ms at one worker, 590 ms at
+  eight. Each worker gets fewer threads as the pool grows, so a job takes longer
+  even as more of them finish.
+
+That is the trade a service makes, and neither number alone describes it. At the
+chosen default of six, a single job is a little under twice as slow as it would
+be alone, and two dozen of them finish three times sooner.
+
+`RUNTIME_OVERHEAD_BYTES` is set from this table rather than from an estimate.
+Marginal cost per worker is `(2619 − 361) / 7 = 322 MB` against 239.5 MB of
+weights, so the overhead is about 82 MB — the constant is 80 MiB, and the rule's
+per-worker figure of 323.4 MB lands on the measurement.
+
+`MAX_WORKERS` stays 8: the curve was still improving there, so it is a
+deliberate stop rather than a knee that was found.
+
+## [x] 5. The default becomes the rule
+
+Measured against a live service with no `--workers`:
+
+```
+sensevoice   workers 6 (adaptive)  2 threads each  1.94 GB of a 2 GB budget
+qwen3-asr    workers 2 (adaptive)  7 threads each  2.14 GB of a 2 GB budget
+--workers 2  workers 2 (flag)      7 threads each
+```
+
+The gigabyte model landing on two while the small one lands on six is the rule
+working, not a shortfall. Re-measuring at the chosen default confirmed the
+prediction: 2.01 s for 24 jobs with all six workers resident.
+
+## [x] 5. The default becomes the rule
 
 `RUNTIME_OVERHEAD_BYTES` and `MAX_WORKERS` set **from the curve**, not from a
 guess.
 
-## [ ] 6. Documents
+## [x] 6. Documents
 
 ---
 

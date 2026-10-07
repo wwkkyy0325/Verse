@@ -81,8 +81,7 @@ pub struct Config {
     pub engine: String,
     /// How long the model is kept after the last job. `None` holds it.
     pub idle: Option<Duration>,
-    /// How many workers. `None` means one until the adaptive rule is wired —
-    /// the default is deliberately left where it was while the pool is built.
+    /// How many workers, or `None` to let the machine and the model decide.
     pub workers: Option<usize>,
 }
 
@@ -205,7 +204,23 @@ pub fn run(config: Config) -> Result<(), String> {
     // would then be runnable on some workers and not others. One budget keeps
     // dispatch FIFO and id-keyed, which is what the queue assumes.
     let hardware = verse_core::HardwareProfile::probe();
-    let workers = config.workers.unwrap_or(1);
+    let loaded = model_bytes(&config.models_dir, &config.engine);
+
+    // The pool's size: what the caller asked for, or what the machine and the
+    // model between them allow. The rule is in `verse-core` so the thread half
+    // and the memory half cannot drift, and so a reader can check it without
+    // reading this function.
+    let (workers, worker_source) = match config.workers {
+        Some(asked) => (asked, "flag"),
+        None => (
+            verse_core::pool_size(
+                hardware.engine_threads(),
+                loaded + verse_core::RUNTIME_OVERHEAD_BYTES,
+                verse_core::MEMORY_BUDGET_BYTES,
+            ),
+            "adaptive",
+        ),
+    };
     let per_worker_threads =
         verse_core::per_worker_threads(hardware.engine_threads(), workers);
 
@@ -217,13 +232,9 @@ pub fn run(config: Config) -> Result<(), String> {
         jobs: jobs::Jobs::new(keepers.clone(), bus.clone(), None),
         keepers,
         workers,
-        worker_source: if config.workers.is_some() {
-            "flag".to_string()
-        } else {
-            "default".to_string()
-        },
+        worker_source: worker_source.to_string(),
         per_worker_threads,
-        model_bytes: model_bytes(&config.models_dir, &config.engine),
+        model_bytes: loaded,
         models_dir: config.models_dir.clone(),
         engine: config.engine.clone(),
         token: new_token(),

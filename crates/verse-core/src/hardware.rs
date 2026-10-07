@@ -133,9 +133,9 @@ impl Tier {
 /// arithmetic says.
 ///
 /// A ceiling so the bound is a number someone can read rather than a
-/// consequence of multiplication. Set from the measured curve in
-/// `docs/llmwiki/tasks/adaptive-pool.md`, not from a guess — see that log for
-/// what the curve showed.
+/// consequence of multiplication. Eight is the largest pool measured, and the
+/// curve was still improving there — 6.03 s for 24 jobs at one worker, 2.02 s
+/// at eight — so this is a deliberate stop rather than a knee that was found.
 pub const MAX_WORKERS: usize = 8;
 
 /// How much memory the workers may hold between them.
@@ -152,10 +152,13 @@ pub const MEMORY_BUDGET_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// What one worker costs beyond its weights.
 ///
 /// The model file is not the whole story: an initialised session, its scratch
-/// buffers and the decoded audio all scale with a worker. Measured, not assumed
-/// — see the "measure the curve" step of the task log, which sets this from the
-/// marginal resident bytes per worker against the weights it loaded.
-pub const RUNTIME_OVERHEAD_BYTES: u64 = 64 * 1024 * 1024;
+/// buffers and the decoded audio all scale with a worker.
+///
+/// **Measured.** A pool of 1 held 361 MB and one of 8 held 2619 MB, so each
+/// additional worker costs about 322 MB against the 239.5 MB of weights it
+/// loads — an overhead of roughly 82 MB, which is this number rounded. See the
+/// curve in `docs/llmwiki/tasks/adaptive-pool.md`.
+pub const RUNTIME_OVERHEAD_BYTES: u64 = 80 * 1024 * 1024;
 
 /// How many workers the machine and the budget between them allow.
 ///
@@ -267,13 +270,11 @@ mod tests {
         // ceiling decides long before fifteen threads run out.
         let machine = profile(true, 16);
 
-        // SenseVoice: 239.5 MB of weights plus the fixed overhead, which comes
-        // to 306.6 MB and so affords seven. **This number moves when
-        // `RUNTIME_OVERHEAD_BYTES` is set from the measured curve** — the
-        // assertion is here so that moving it is a decision rather than a
-        // surprise.
+        // SenseVoice: 239.5 MB of weights plus 80 MiB of overhead is 323.4 MB,
+        // and the budget affords six of those. The measured marginal cost per
+        // worker was 322 MB, so the arithmetic matches what the machine did.
         let small = 239_500_000 + RUNTIME_OVERHEAD_BYTES;
-        assert_eq!(machine.pool_size(small, MEMORY_BUDGET_BYTES), 7);
+        assert_eq!(machine.pool_size(small, MEMORY_BUDGET_BYTES), 6);
 
         // Qwen3-ASR: 987 MB, so about two fit and no more. That the gigabyte
         // model lands low is the intent, not a shortfall.

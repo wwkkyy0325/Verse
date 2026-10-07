@@ -385,11 +385,40 @@ and `202`; `GET /jobs/{id}` reports state, progress and — once settled — the
 result; `DELETE /jobs/{id}` cancels. A synchronous call could show no progress
 and could not be stopped.
 
-**One job at a time, queued.** A keeper is one model, and the model is held for
-the whole of a transcription. A pool is the obvious next thing and is deferred
-with its cost named rather than taken by default: each worker is a resident
-model, 228 MB or about 982 MB, and `-j 4` on the command line already measured
-1245 MB peak on a machine this project requires to have 8 GB.
+**A pool of workers, sized from the machine and the model.** Each worker is a
+`ModelKeeper`, and therefore a resident model, so the size is a rule rather than
+a guess:
+
+```
+per_worker_bytes = model_bytes + RUNTIME_OVERHEAD_BYTES
+pool = min(MEMORY_BUDGET_BYTES / per_worker_bytes, engine_threads)
+         .clamp(1, MAX_WORKERS)
+```
+
+The budget is **2 GiB, and it is an assumption rather than a probe** — reading
+the machine's RAM needs FFI and `unsafe` on every platform this targets, and the
+project has neither — so it is anchored to the 8 GB floor §3 states and
+**reported to clients through `/health`**, where they can disagree with it. On a
+16-core machine this gives six workers for SenseVoice and two for Qwen3-ASR.
+
+**One thread budget for the whole pool**, which is an invariant and not a
+tidiness: the settings digest includes the resolved thread count, so workers
+with different budgets would hold different model identities and a job would be
+runnable on only some of them.
+
+Measured, 24 jobs of one clip:
+
+| N | total wall | median per job | peak RSS |
+|---|---|---|---|
+| 1 | 6.03 s | 249 ms | 361 MB |
+| 4 | 2.43 s | 375 ms | 1324 MB |
+| 8 | 2.02 s | 590 ms | 2619 MB |
+
+**The two numbers disagree and that is the point.** Throughput keeps improving —
+three times as many jobs finish per second at six workers as at one — while
+per-job latency gets worse, because each worker holds fewer threads as the pool
+grows. A service makes that trade deliberately: two dozen jobs finish three
+times sooner, and one job on its own is a little under twice as slow.
 
 **The HTTP is hand-rolled and the subset is deliberate.** `httparse` parses the
 request line and headers — already in the graph through Tauri, so a manifest
