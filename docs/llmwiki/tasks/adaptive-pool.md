@@ -50,7 +50,7 @@ numbers move when `RUNTIME_OVERHEAD_BYTES` is set from the measured curve, and
 the test asserts the current value precisely so that moving it is a decision
 rather than a surprise.
 
-## [ ] 2. `Jobs` runs a pool; `--workers` plumbed; **default still 1**
+## [x] 2. `Jobs` runs a pool; `--workers` plumbed; **default still 1**
 
 `Queue.running: Option<u64>` becomes a count — that field, `Jobs::running()` and
 `JobList.running` are the only three single-worker assumptions.
@@ -65,12 +65,33 @@ running count of 2; `--workers 0` is refused; and a test pinning that
 `threads: Some(engine_threads)` and `threads: None` produce the **same** digest,
 so a pool of 1 invalidates no existing cache entry.
 
-## [ ] 3. `/health` reports the pool
+## [x] 3. `/health` reports the pool
 
 Because making the cost visible was the price of defaulting to adaptive.
 
 **Verify:** the contract test asserts every new key with pool 1, and the
 integration test reads `pool.workers` and `pool.impliedPeakBytes` over a socket.
+
+**Done, and folded into the same commit as step 2** — separating them would have
+left a committed state with a dead field and a warning. Measured against a
+running service with `--workers 3`:
+
+```
+workers 3 · workerSource "flag" · perWorkerThreads 5
+modelBytes 239549735 · overheadBytes 67108864 · perWorkerBytes 306658599
+budgetBytes 2147483648 · impliedPeakBytes 919975797
+budgetAssumption "assumed, not probed: a quarter of the 8 GB machine floor"
+model.residentKeepers 0 · jobs.runningCount 0
+```
+
+`modelBytes` matches the file on disk, and `perWorkerThreads` is 15 ÷ 3.
+
+**A test of mine was near-tautological and I caught it by falsifying.** The first
+version asserted that `digest(None)` equals `digest(Some(digest(None)))` — which
+holds for almost any resolution rule, so it passed even when I deliberately broke
+`effective_threads` to resolve `Some(n)` as `n + 1`. The rewritten test asserts
+what actually decides the cache key: that the two spellings **resolve to the same
+number**. It now fails under that falsification, with `left: 16, right: 15`.
 
 ## [ ] 4. Measure the curve
 

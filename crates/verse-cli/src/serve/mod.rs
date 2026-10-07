@@ -28,6 +28,14 @@ use verse_pipeline::ModelKeeper;
 
 use http::{HeadError, Response};
 
+/// What the memory budget is, in words a client can act on.
+///
+/// It is a written assumption rather than a measurement, because reading the
+/// machine's RAM needs FFI and `unsafe` on every platform this project targets
+/// and the project has neither.
+pub const BUDGET_ASSUMPTION: &str =
+    "assumed, not probed: a quarter of the 8 GB machine floor design.md states";
+
 /// The port `serve` uses unless told otherwise.
 ///
 /// Chosen by the rule in `ui-design.md` §6.1: above 1024 so it needs no
@@ -73,6 +81,9 @@ pub struct Config {
     pub engine: String,
     /// How long the model is kept after the last job. `None` holds it.
     pub idle: Option<Duration>,
+    /// How many workers. `None` means one until the adaptive rule is wired —
+    /// the default is deliberately left where it was while the pool is built.
+    pub workers: Option<usize>,
 }
 
 impl Config {
@@ -103,8 +114,21 @@ impl Config {
 
 /// What every request handler is given.
 pub struct Server {
-    pub keeper: Arc<ModelKeeper>,
+    /// One per worker. Aggregated for `/health` rather than reported one by
+    /// one: a client cares what the pool costs, not which worker is warm.
+    pub keepers: Vec<Arc<ModelKeeper>>,
     pub jobs: jobs::Jobs,
+    pub workers: usize,
+    /// Why the pool is that size, so a client can tell a decision from a
+    /// default.
+    pub worker_source: String,
+    /// What each worker asks the machine for. Set once, so every worker binds
+    /// the same model identity.
+    pub per_worker_threads: usize,
+    /// The weights one worker loads, from the catalogue. Zero when the engine
+    /// is not in the catalogue at all — which makes the pool one, rather than
+    /// guessing what it costs.
+    pub model_bytes: u64,
     pub models_dir: std::path::PathBuf,
     pub engine: String,
     pub token: String,
@@ -173,11 +197,33 @@ pub fn run(config: Config) -> Result<(), String> {
     }
 
     let bus = EventBus::new();
-    let keeper = Arc::new(ModelKeeper::with_timeout(bus.clone(), config.idle));
+
+    // **One thread budget for the whole pool**, decided here rather than per
+    // worker, and it is an invariant rather than a tidiness. The settings
+    // digest includes the resolved thread count, so workers with different
+    // budgets would hold *different model identities* — and a job's request
+    // would then be runnable on some workers and not others. One budget keeps
+    // dispatch FIFO and id-keyed, which is what the queue assumes.
+    let hardware = verse_core::HardwareProfile::probe();
+    let workers = config.workers.unwrap_or(1);
+    let per_worker_threads =
+        verse_core::per_worker_threads(hardware.engine_threads(), workers);
+
+    let keepers: Vec<Arc<ModelKeeper>> = (0..workers)
+        .map(|_| Arc::new(ModelKeeper::with_timeout(bus.clone(), config.idle)))
+        .collect();
 
     let server = Arc::new(Server {
-        jobs: jobs::Jobs::new(Arc::clone(&keeper), bus.clone(), None),
-        keeper,
+        jobs: jobs::Jobs::new(keepers.clone(), bus.clone(), None),
+        keepers,
+        workers,
+        worker_source: if config.workers.is_some() {
+            "flag".to_string()
+        } else {
+            "default".to_string()
+        },
+        per_worker_threads,
+        model_bytes: model_bytes(&config.models_dir, &config.engine),
         models_dir: config.models_dir.clone(),
         engine: config.engine.clone(),
         token: new_token(),
@@ -320,6 +366,23 @@ fn error_body(status: u16, message: &str) -> String {
         r#"{{"error":{{"kind":"{kind}","message":{}}}}}"#,
         serde_json::Value::String(message.to_string())
     )
+}
+
+/// What one worker's weights cost, from the catalogue.
+///
+/// Zero when the engine is not in the catalogue — which the sizing rule reads
+/// as "unknown", and answers with one worker rather than a guess.
+fn model_bytes(models_dir: &std::path::Path, engine: &str) -> u64 {
+    use verse_model::Catalog;
+
+    Catalog::load_or_embedded(&models_dir.join("catalog.json"))
+        .ok()
+        .and_then(|catalog| {
+            catalog
+                .find(engine)
+                .map(|spec| spec.files.iter().filter_map(|file| file.size).sum())
+        })
+        .unwrap_or(0)
 }
 
 /// Where the discovery file lives.

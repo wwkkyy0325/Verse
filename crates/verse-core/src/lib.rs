@@ -23,7 +23,10 @@ pub use domain::{
 pub use error::{Error, ErrorInfo, ErrorKind, Result};
 pub use event::{Event, EventBus, JobKind, Subscription};
 pub use export::Format as ExportFormat;
-pub use hardware::{per_worker_threads, pool_size, HardwareProfile, Tier};
+pub use hardware::{
+    per_worker_threads, pool_size, HardwareProfile, Tier, MAX_WORKERS, MEMORY_BUDGET_BYTES,
+    RUNTIME_OVERHEAD_BYTES,
+};
 pub use registry::{
     EngineConfig, EngineDescriptor, Registry, SinkConfig, SinkDescriptor, SourceConfig,
     SourceDescriptor,

@@ -1110,6 +1110,7 @@ fn serve_command(args: &[String]) -> Result<(), Failure> {
         models_dir: PathBuf::from(DEFAULT_MODELS_DIR),
         engine: DEFAULT_ENGINE.to_string(),
         idle: serve::Config::idle_from_env(),
+        workers: None,
     };
 
     let mut i = 0;
@@ -1125,6 +1126,18 @@ fn serve_command(args: &[String]) -> Result<(), Failure> {
                 config.models_dir = PathBuf::from(take_value(args, &mut i, "--models")?);
             }
             "--engine" => config.engine = take_value(args, &mut i, "--engine")?,
+            "--workers" => {
+                let raw = take_value(args, &mut i, "--workers")?;
+                let count: usize = raw.parse().map_err(|_| {
+                    Failure::usage(format!("--workers wants a number, not {raw:?}"))
+                })?;
+                // Refused rather than silently corrected, the way `-j 0` is: a
+                // service that cannot run any job is not what was asked for.
+                if count == 0 {
+                    return Err(Failure::usage("--workers must be at least 1"));
+                }
+                config.workers = Some(count);
+            }
             "--no-idle" => config.idle = None,
             other => return Err(Failure::usage(format!("unknown option {other:?}\n\n{USAGE}"))),
         }
@@ -1172,6 +1185,9 @@ fn serve_usage() -> String {
     s.push_str(&format!(
         "      --engine <id>      Engine (default {DEFAULT_ENGINE})\n"
     ));
+    s.push_str("      --workers <n>      Jobs to recognise at once (default 1 for now).\n");
+    s.push_str("                         Each worker holds its own model: about 250 MB for\n");
+    s.push_str("                         SenseVoice, 1 GB for Qwen3.\n");
     s.push_str("      --no-idle          Keep the model loaded until killed\n");
     s.push_str("\nenvironment:\n");
     s.push_str("      VERSE_SERVE_PORT   The same as --port\n");

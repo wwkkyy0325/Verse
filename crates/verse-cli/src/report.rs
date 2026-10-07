@@ -175,7 +175,37 @@ pub struct Health {
     pub service: ServiceInfo,
     pub model: ModelInfo,
     pub jobs: JobsInfo,
+    pub pool: PoolInfo,
     pub models_dir: String,
+}
+
+/// What the pool is, and what it costs.
+///
+/// The price of defaulting to adaptive was making the cost visible, so this is
+/// where that is paid: a client can see how many models are resident, what each
+/// one costs, and the assumption the number came from — and disagree with it
+/// rather than merely obey it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PoolInfo {
+    pub workers: usize,
+    /// Why the pool is this size: `flag` if `--workers` said so, `adaptive` if
+    /// the rule chose, `default` while the rule is not yet wired.
+    pub worker_source: String,
+    pub per_worker_threads: usize,
+    /// The weights, from the catalogue.
+    pub model_bytes: u64,
+    /// Everything else one resident worker costs. Measured, not assumed — see
+    /// the task log for the curve it came from.
+    pub overhead_bytes: u64,
+    pub per_worker_bytes: u64,
+    pub budget_bytes: u64,
+    /// That the budget is a written assumption rather than a probe, so a client
+    /// reading this number knows what it is worth.
+    pub budget_assumption: String,
+    /// What the pool implies at its fullest, so the arithmetic is checkable
+    /// rather than hidden.
+    pub implied_peak_bytes: u64,
 }
 
 /// What the queue is doing, and what it is allowed to do.
@@ -184,6 +214,8 @@ pub struct Health {
 pub struct JobsInfo {
     pub queued: usize,
     pub running: bool,
+    /// How many jobs are in flight. Never more than `pool.workers`.
+    pub running_count: usize,
     /// How many finished jobs are held for a client to collect.
     pub retained: usize,
     /// The bounds, reported so a client can tell "the queue is nearly full"
@@ -215,8 +247,12 @@ pub struct ModelInfo {
     /// `unloaded`, `loading`, `standby` or `busy` — whether the weights are
     /// resident, which is not the same question as `present`.
     pub status: String,
-    /// How many times a model has been read from disk since this started.
+    /// How many times a model has been read from disk since this started,
+    /// summed across the pool. With several workers this is larger than the
+    /// number of models: each worker reads its own.
     pub loads: u64,
+    /// How many workers are currently holding weights.
+    pub resident_keepers: usize,
 }
 
 /// What a cleanup removed.

@@ -9,6 +9,7 @@ use verse_model::{Catalog, Downloader};
 use super::http::{Head, Response};
 use super::jobs::CancelOutcome;
 use super::Server;
+use super::BUDGET_ASSUMPTION;
 use crate::report;
 
 /// Answer one request.
@@ -139,7 +140,11 @@ fn submit(server: &Server, body: &[u8]) -> Response {
         max_output_tokens: None,
         guard: verse_pipeline::GuardSettings::default(),
         hotwords: asked.hotwords,
-        threads: None,
+        // The pool's one budget, not the machine's whole allowance: with four
+        // workers each asking for cores − 1, eight cores would be asked for
+        // twenty-eight threads. The same division the command line's `--jobs`
+        // does, from the same function.
+        threads: Some(server.per_worker_threads),
         cache: if asked.no_cache.unwrap_or(false) {
             verse_pipeline::CachePolicy::Disabled
         } else {
@@ -218,8 +223,13 @@ fn health(server: &Server) -> Response {
             // Size only, and named so: a model present at the expected size but
             // unusable passes this, which is why the job is what reports it.
             present,
-            status: status_name(server.keeper.status()).to_string(),
-            loads: server.keeper.loads(),
+            status: pool_status(&server.keepers).to_string(),
+            loads: server.keepers.iter().map(|keeper| keeper.loads()).sum(),
+            resident_keepers: server
+                .keepers
+                .iter()
+                .filter(|keeper| keeper.status() != verse_pipeline::ModelStatus::Unloaded)
+                .count(),
         },
         jobs: report::JobsInfo {
             queued: server.jobs.queued(),
@@ -227,6 +237,19 @@ fn health(server: &Server) -> Response {
             retained: server.jobs.retained(),
             max_queued: crate::serve::jobs::MAX_QUEUED,
             max_retained: crate::serve::jobs::MAX_RETAINED,
+            running_count: server.jobs.running_count(),
+        },
+        pool: report::PoolInfo {
+            workers: server.workers,
+            worker_source: server.worker_source.clone(),
+            per_worker_threads: server.per_worker_threads,
+            model_bytes: server.model_bytes,
+            overhead_bytes: verse_core::RUNTIME_OVERHEAD_BYTES,
+            per_worker_bytes: server.model_bytes + verse_core::RUNTIME_OVERHEAD_BYTES,
+            budget_bytes: verse_core::MEMORY_BUDGET_BYTES,
+            budget_assumption: BUDGET_ASSUMPTION.to_string(),
+            implied_peak_bytes: server.workers as u64
+                * (server.model_bytes + verse_core::RUNTIME_OVERHEAD_BYTES),
         },
         models_dir: server.models_dir.display().to_string(),
     };
@@ -279,12 +302,26 @@ fn models(server: &Server) -> Response {
     )
 }
 
-fn status_name(status: verse_pipeline::ModelStatus) -> &'static str {
-    match status {
-        verse_pipeline::ModelStatus::Unloaded => "unloaded",
-        verse_pipeline::ModelStatus::Loading => "loading",
-        verse_pipeline::ModelStatus::Standby => "standby",
-        verse_pipeline::ModelStatus::Busy => "busy",
+/// What the pool is doing, in one word.
+///
+/// The union rather than any single worker's state, and ordered by what a
+/// client would act on: something busy is the most informative fact, then
+/// something loading, then something ready. A pool where one worker is busy and
+/// five are idle is not "standby" — it is working, and saying otherwise would
+/// invite a client to submit more.
+fn pool_status(keepers: &[std::sync::Arc<verse_pipeline::ModelKeeper>]) -> &'static str {
+    let any = |wanted: verse_pipeline::ModelStatus| {
+        keepers.iter().any(|keeper| keeper.status() == wanted)
+    };
+
+    if any(verse_pipeline::ModelStatus::Busy) {
+        "busy"
+    } else if any(verse_pipeline::ModelStatus::Loading) {
+        "loading"
+    } else if any(verse_pipeline::ModelStatus::Standby) {
+        "standby"
+    } else {
+        "unloaded"
     }
 }
 
@@ -345,8 +382,12 @@ mod tests {
         let keeper = std::sync::Arc::new(ModelKeeper::with_timeout(bus.clone(), None));
 
         Server {
-            jobs: crate::serve::jobs::Jobs::new(std::sync::Arc::clone(&keeper), bus, None),
-            keeper,
+            jobs: crate::serve::jobs::Jobs::new(vec![std::sync::Arc::clone(&keeper)], bus, None),
+            keepers: vec![keeper],
+            workers: 1,
+            worker_source: "default".to_string(),
+            per_worker_threads: verse_core::HardwareProfile::probe().engine_threads(),
+            model_bytes: 0,
             models_dir: dir.to_path_buf(),
             engine: "sensevoice".to_string(),
             token: "a".repeat(64),
@@ -390,9 +431,33 @@ mod tests {
         for key in ["instance", "pid", "startedAtMs", "uptimeMs"] {
             assert!(value["service"].get(key).is_some(), "missing service.{key}");
         }
-        for key in ["engine", "present", "status", "loads"] {
+        for key in ["engine", "present", "status", "loads", "residentKeepers"] {
             assert!(value["model"].get(key).is_some(), "missing model.{key}");
         }
+        // The pool, because making the cost visible was the price of defaulting
+        // to adaptive. Every field is present even when the pool is one, so a
+        // client never has to branch on the key existing.
+        for key in [
+            "workers",
+            "workerSource",
+            "perWorkerThreads",
+            "modelBytes",
+            "overheadBytes",
+            "perWorkerBytes",
+            "budgetBytes",
+            "budgetAssumption",
+            "impliedPeakBytes",
+        ] {
+            assert!(value["pool"].get(key).is_some(), "missing pool.{key}");
+        }
+        assert!(
+            value["pool"]["budgetAssumption"]
+                .as_str()
+                .expect("a string")
+                .contains("assumed"),
+            "the budget must say that it is an assumption"
+        );
+        assert!(value["jobs"].get("runningCount").is_some());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

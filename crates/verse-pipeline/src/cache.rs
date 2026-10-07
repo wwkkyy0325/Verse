@@ -268,6 +268,42 @@ mod tests {
     }
 
     #[test]
+    fn naming_the_thread_count_it_would_have_chosen_anyway_changes_nothing() {
+        // Load-bearing for the service's pool. A job's request carries an
+        // explicit thread budget, because the budget is shared across workers —
+        // and if that made the key differ from the `None` it used to be, every
+        // cached transcription would be invalidated the day the pool landed.
+        //
+        // It does not, because the digest keys on the *resolved* count and
+        // `effective_threads` resolves `None` to the same number.
+        let dir = scratch("threads-identity");
+        let mut automatic = request(&dir);
+        automatic.threads = None;
+
+        // The assertion that has teeth. Comparing `digest(None)` against
+        // `digest(Some(digest(None)))` would be near-tautological — it holds for
+        // almost any resolution rule. What decides the cache key is that the
+        // two spellings *resolve to the same number*.
+        let resolved_from_none = crate::effective_threads(&automatic);
+
+        let mut explicit = automatic.clone();
+        explicit.threads = Some(resolved_from_none);
+
+        assert_eq!(
+            crate::effective_threads(&explicit),
+            resolved_from_none,
+            "naming the count it would have chosen anyway must change nothing"
+        );
+        assert_eq!(
+            settings_digest(&automatic, resolved_from_none, None),
+            settings_digest(&explicit, crate::effective_threads(&explicit), None),
+            "a pool of one must not invalidate the cache"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_different_thread_count_is_a_different_run() {
         // ONNX reduction order is not thread-count invariant, so the same
         // request run with a different number of threads is not the same result.

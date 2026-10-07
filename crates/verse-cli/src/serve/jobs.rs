@@ -194,7 +194,10 @@ pub struct JobList {
     pub version: u32,
     pub jobs: Vec<JobView>,
     pub queued: usize,
+    /// Whether anything is running at all. Kept because it is already on the
+    /// wire; `runningCount` is the part that can express a pool.
     pub running: bool,
+    pub running_count: usize,
 }
 
 /// Why a submission was refused.
@@ -214,7 +217,10 @@ struct Queue {
     /// configuration, and here rather than in a `static` because two of these
     /// may be alive at once — which in a test binary they are.
     pending: BTreeMap<u64, Request>,
-    running: Option<u64>,
+    /// How many jobs are being recognised right now. A count rather than an
+    /// id, because there is more than one worker and nothing ever needed to
+    /// know *which* job was running.
+    running: usize,
     next_id: u64,
 }
 
@@ -224,7 +230,6 @@ struct Inner {
     origin: Instant,
     state: Mutex<Queue>,
     signal: Condvar,
-    runner: Box<Runner>,
 }
 
 /// The queue and the one worker that drains it.
@@ -237,20 +242,39 @@ impl Jobs {
     ///
     /// `bus` is the keeper's own bus; the worker subscribes to it separately so
     /// that progress reaches a job record.
+    /// Start one worker per keeper.
+    ///
+    /// **`keepers.len()` is the pool size**, so the two cannot disagree. Each
+    /// worker gets its own keeper and therefore its own model — which is the
+    /// whole cost, and the reason the pool is sized by a rule rather than by
+    /// how busy the service looks.
+    ///
+    /// `runner` is for tests and for any transport that wants to supply its own
+    /// work; when it is absent each worker transcribes through its own keeper.
     pub fn new(
-        keeper: Arc<ModelKeeper>,
+        keepers: Vec<Arc<ModelKeeper>>,
         bus: EventBus,
-        runner: Option<Box<Runner>>,
+        runner: Option<Arc<Runner>>,
     ) -> Self {
-        let runner = runner.unwrap_or_else(|| {
-            // The keeper is shared rather than moved: the service also needs to
-            // ask it what it is doing, and a runner that owned it would leave
-            // `/health` unable to answer.
-            let keeper = Arc::clone(&keeper);
-            Box::new(move |request: Request, job: JobId, cancel: &CancelToken| {
-                keeper.transcribe(request, job, cancel)
-            })
-        });
+        let runners: Vec<Box<Runner>> = match runner {
+            Some(shared) => (0..keepers.len())
+                .map(|_| {
+                    let shared = Arc::clone(&shared);
+                    Box::new(move |request: Request, job: JobId, cancel: &CancelToken| {
+                        shared(request, job, cancel)
+                    }) as Box<Runner>
+                })
+                .collect(),
+            None => keepers
+                .iter()
+                .map(|keeper| {
+                    let keeper = Arc::clone(keeper);
+                    Box::new(move |request: Request, job: JobId, cancel: &CancelToken| {
+                        keeper.transcribe(request, job, cancel)
+                    }) as Box<Runner>
+                })
+                .collect(),
+        };
 
         let inner = Arc::new(Inner {
             origin: Instant::now(),
@@ -258,14 +282,19 @@ impl Jobs {
                 records: BTreeMap::new(),
                 waiting: VecDeque::new(),
                 pending: BTreeMap::new(),
-                running: None,
+                running: 0,
                 next_id: 1,
             }),
             signal: Condvar::new(),
-            runner,
         });
 
-        spawn_worker(Arc::clone(&inner));
+        for runner in runners {
+            spawn_worker(Arc::clone(&inner), runner);
+        }
+        // One drain, not one per worker: the bus is unbounded, and a subscriber
+        // that stopped reading would accumulate every event for the life of the
+        // process. Every update is keyed by job id, so concurrent jobs write
+        // their own records.
         spawn_drain(bus.subscribe_all(), Arc::clone(&inner));
 
         Self { inner }
@@ -328,7 +357,8 @@ impl Jobs {
             version: VERSION,
             jobs,
             queued: state.waiting.len(),
-            running: state.running.is_some(),
+            running: state.running > 0,
+            running_count: state.running,
         }
     }
 
@@ -382,12 +412,16 @@ impl Jobs {
     }
 
     pub fn running(&self) -> bool {
+        self.running_count() > 0
+    }
+
+    /// How many jobs are in flight. Never more than the pool size.
+    pub fn running_count(&self) -> usize {
         self.inner
             .state
             .lock()
             .expect("jobs mutex poisoned")
             .running
-            .is_some()
     }
 }
 
@@ -397,7 +431,7 @@ pub enum CancelOutcome {
     Settled,
 }
 
-fn spawn_worker(inner: Arc<Inner>) {
+fn spawn_worker(inner: Arc<Inner>, runner: Box<Runner>) {
     std::thread::spawn(move || {
         loop {
             let (id, request) = {
@@ -409,7 +443,7 @@ fn spawn_worker(inner: Arc<Inner>) {
                             continue;
                         };
 
-                        state.running = Some(id);
+                        state.running += 1;
                         if let Some(record) = state.records.get_mut(&id) {
                             record.state = State::Running;
                             record.started = Some(Instant::now());
@@ -432,10 +466,10 @@ fn spawn_worker(inner: Arc<Inner>) {
                 (record.cancel.clone(), record.input.clone(), record.format)
             };
 
-            let outcome = (inner.runner)(request, JobId(id), &cancel);
+            let outcome = runner(request, JobId(id), &cancel);
 
             let mut state = inner.state.lock().expect("jobs mutex poisoned");
-            state.running = None;
+            state.running -= 1;
 
             if let Some(record) = state.records.get_mut(&id) {
                 record.finished = Some(Instant::now());
@@ -588,9 +622,17 @@ mod tests {
     }
 
     fn a_jobs(runner: Box<Runner>) -> Jobs {
+        a_pool_of(1, runner)
+    }
+
+    /// The same, with a chosen number of workers and one shared fake runner.
+    fn a_pool_of(workers: usize, runner: Box<Runner>) -> Jobs {
         let bus = EventBus::new();
-        let keeper = Arc::new(ModelKeeper::with_timeout(bus.clone(), None));
-        Jobs::new(keeper, bus, Some(runner))
+        let keepers = (0..workers)
+            .map(|_| Arc::new(ModelKeeper::with_timeout(bus.clone(), None)))
+            .collect();
+
+        Jobs::new(keepers, bus, Some(Arc::from(runner)))
     }
 
     /// Wait for a job to settle, or give up.
@@ -732,6 +774,72 @@ mod tests {
 
         assert!(matches!(jobs.cancel(id), Err(CancelOutcome::Settled)));
         assert!(matches!(jobs.cancel(9999), Err(CancelOutcome::Unknown)));
+    }
+
+    #[test]
+    fn a_pool_runs_several_jobs_at_once() {
+        // The thing the pool is for. Each worker blocks until it is cancelled,
+        // so if only one worker existed the count could never reach two.
+        let jobs = a_pool_of(
+            3,
+            Box::new(|_r, _j, cancel| {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while !cancel.is_cancelled() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(Error::cancelled())
+            }),
+        );
+
+        let ids: Vec<u64> = (0..3)
+            .map(|_| jobs.submit(a_submission()).expect("accepted"))
+            .collect();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while jobs.running_count() < 3 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        assert_eq!(jobs.running_count(), 3, "three workers, three jobs");
+        assert!(jobs.running());
+        assert_eq!(jobs.list().running_count, 3);
+        // And the boolean the wire already carried still means what it did.
+        assert!(jobs.list().running);
+
+        for id in ids {
+            let _ = jobs.cancel(id);
+        }
+    }
+
+    #[test]
+    fn a_pool_never_runs_more_than_it_has_workers() {
+        // The count is the pool size, not the queue depth. A fourth job waits.
+        let jobs = a_pool_of(
+            2,
+            Box::new(|_r, _j, cancel| {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while !cancel.is_cancelled() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(Error::cancelled())
+            }),
+        );
+
+        let ids: Vec<u64> = (0..4)
+            .map(|_| jobs.submit(a_submission()).expect("accepted"))
+            .collect();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while jobs.running_count() < 2 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        assert_eq!(jobs.running_count(), 2);
+        assert_eq!(jobs.queued(), 2, "the rest wait their turn");
+
+        for id in ids {
+            let _ = jobs.cancel(id);
+        }
     }
 
     #[test]
