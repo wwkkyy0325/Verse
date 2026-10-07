@@ -211,25 +211,33 @@ will never draw. `app.css` points at the single file instead: 440 kB becomes
 
 **shadcn-svelte, copied into the project.** `src/lib/components/ui/` holds
 source rather than a dependency, so these are ours to edit and there is no
-upstream to wait on. Eight were taken, each earning its place by being needed
-on two or more screens:
+upstream to wait on. Three are in use:
 
 | Component | Used by |
 |---|---|
 | `Button` | every screen |
-| `Card` | empty, model, working, done |
 | `Dialog` | 关于 |
 | `Progress` | model download, transcribing |
-| `ScrollArea` | transcript |
-| `Separator` | done, about |
-| `Alert` | failed, degraded-hardware notice |
-| `Sonner` | export confirmation, background failures |
+
+**Five more were taken and have since been removed** — `Card`, `ScrollArea`,
+`Separator`, `Alert` and `Sonner`. Each was chosen here for a screen that was
+then built without it: the transcript scrolls in a hand-written element, the
+failed screen and the reduced-mode notice are hand-written markup, and `Done`
+reports a failed save in its footer rather than as a toast. This was not
+scaffolding for work still to come — the screens exist. Because Tailwind scans
+component sources, the five contributed 5.7 kB of rules for classes nothing
+used, and `Sonner` was the only reason `svelte-sonner` and `mode-watcher` were
+dependencies at all.
+
+That leaves the admission rule this table was written with — a component is
+worth taking when two or more screens need it — deciding the other way, and
+the three above are what it admitted.
 
 Two stay hand-written, because no component set has an opinion about them:
 
 **`DropZone`** — the dashed drop target, in three states: idle, hover, and
 active while a file is over it. It is the first thing the user meets and the
-entire first step of the interface, which is worth more than a styled `Card`.
+entire first step of the interface, which is worth more than a styled box.
 
 **`TranscriptView`** — a scroller of `[timecode] text` with auto-follow:
 during `Working` new segments scroll into view, but the moment the user

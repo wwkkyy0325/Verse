@@ -293,10 +293,9 @@
     <Button variant="ghost" size="sm" onclick={() => void showAbout()}>关于</Button>
   </header>
 
-  <!-- Hand-written rather than the vendored `Alert`, which ui-design.md §5
-       names for this: that table admits a component when two screens need it,
-       and only this one does. A full-width bar is also what §3 describes, and
-       an `Alert` is a rounded box inside padding. -->
+  <!-- Hand-written, like the rest of this file. The vendored `Alert` that
+       ui-design.md §5 used to name for this has been removed — it was one of
+       five components taken for screens that were then built without them. -->
   {#if notice}
     <div class="bg-muted/40 flex shrink-0 items-center gap-3 border-b px-5 py-2">
       <span class="text-muted-foreground text-xs">{notice}</span>

@@ -1603,3 +1603,56 @@ correction being made before.
 
 332 tests — two fewer than before, and they are precisely the two that asserted
 a field nothing could set. Clippy clean.
+
+## 2026-10-07 — Five components no screen ever used
+
+`ui-design.md` §5 claimed eight shadcn-svelte components were taken, "each
+earning its place by being needed on two or more screens". Measured, three are
+imported by anything at all — `Button`, `Dialog`, `Progress`. `Card`,
+`ScrollArea`, `Separator`, `Alert` and `Sonner` are referenced nowhere: not in
+`App.svelte`, not in the CSS, not in `components.json`, the Vite config or
+`index.html`.
+
+**The obvious defence of them does not survive checking.** §5 lists each against
+screens by name, which made the claim testable: `Card` for "empty, model,
+working, done", `ScrollArea` for "transcript", `Alert` for the failed screen and
+the hardware notice, `Sonner` for export confirmation. **Every one of those
+screens exists**, and every one was built without the component named for it —
+the transcript scrolls in a hand-written element with auto-follow, and `Done`
+reports a failed write in its footer. They are not scaffolding for work still to
+come. They are what a screen leaves behind when it is built a different way.
+
+Both costs are measured, not reasoned:
+
+- **Every build paid for them.** Tailwind scans component sources for class
+  names, so the stylesheet is 31.55 kB with them gone and was 37.23 kB with
+  them in the tree — 5.7 kB of rules for classes nothing used.
+- **`Sonner` was the only reason two npm dependencies existed.** It imported
+  `svelte-sonner` and `mode-watcher`, and nothing else referenced either.
+
+Twenty files and 450 lines of vendored source removed, plus those two packages.
+
+**A trap worth recording, because it nearly produced a wrong answer.** The first
+check for orphaned dependencies grepped the *current* source and reported
+`mode-watcher` as unreferenced — which read as pre-existing dead weight rather
+than something this change had caused. It was caused by this change:
+`sonner.svelte` had imported it, and that file was already deleted by the time
+the grep ran. Checking the deleted files (`git show HEAD:<path>`) is what gives
+the right answer; checking what is left cannot.
+
+`@internationalized/date` is also unreferenced and was **left alone** — no
+deleted file imported it, so it is not this change's orphan, and it is a common
+sibling of `bits-ui`, which is still used.
+
+**One measurement I chased down instead of assuming.** `svelte-check` reported
+657 files before the deletion and 597 after — 60 for 20 files, which is the kind
+of tidy ratio that invites a wrong explanation. Restoring one two-file component
+moved the count by 42, so the number is not a file count at all: it is the whole
+type-checking program, packages included, and `sonner.svelte` was dragging
+`svelte-sonner` into it.
+
+§5 now lists the three in use and says plainly what the other five were. The
+admission rule it was written with — two or more screens — is unchanged, and is
+what the three survivors satisfy.
+
+Rust untouched; 332 tests and clippy clean, `svelte-check` 0 errors.
