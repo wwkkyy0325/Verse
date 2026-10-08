@@ -608,6 +608,7 @@ mod tests {
             id: "test".to_string(),
             description: None,
             display_name: "Test".to_string(),
+            requires: Vec::new(),
             files: vec![
                 ModelFile {
                     remote: "a.bin".to_string(),
@@ -644,6 +645,7 @@ mod tests {
             id: "unreachable".to_string(),
             description: None,
             display_name: "Unreachable".to_string(),
+            requires: Vec::new(),
             files: vec![ModelFile {
                 remote: "a.bin".to_string(),
                 local: "a.bin".to_string(),
@@ -806,6 +808,7 @@ mod tests {
             id: "nested".to_string(),
             description: None,
             display_name: "Nested".to_string(),
+            requires: Vec::new(),
             files: vec![ModelFile {
                 remote: "a.bin".to_string(),
                 local: "sub/dir/a.bin".to_string(),

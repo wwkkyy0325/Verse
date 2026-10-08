@@ -1237,7 +1237,7 @@ fn model_list(models_dir: &Path, json: bool) -> Result<(), Failure> {
             .map(|spec| report::ModelEntry {
                 id: spec.id.clone(),
                 display_name: spec.display_name.clone(),
-                present: Downloader::is_present(spec, models_dir),
+                present: catalog.all_present(spec, models_dir),
                 directory: Downloader::directory_for(spec, models_dir)
                     .display()
                     .to_string(),
@@ -1266,7 +1266,7 @@ fn model_list(models_dir: &Path, json: bool) -> Result<(), Failure> {
     println!();
 
     for spec in &catalog.models {
-        let installed = Downloader::is_present(spec, models_dir);
+        let installed = catalog.all_present(spec, models_dir);
         let mark = if installed { "present" } else { "missing" };
 
         let on_disk = verse_model::cleanup::usage(models_dir, &spec.id).bytes;
@@ -1313,16 +1313,29 @@ fn model_fetch(id: &str, models_dir: &Path) -> Result<(), Failure> {
             Failure::usage(format!("unknown model '{id}'; run 'verse model list'"))
         })?;
 
-    if Downloader::is_present(spec, models_dir) {
+    if catalog.all_present(spec, models_dir) {
         println!("{} is already present", spec.display_name);
         return Ok(());
     }
 
-    println!("fetching {}", spec.display_name);
-
     let downloader = Downloader::new();
     // No cancellation source yet; a later UI will drive this.
     let cancel = CancelToken::new();
+
+    // What this model cannot run without. Fetched first, and named — the
+    // command line has no card to put a second progress bar on, and silence
+    // about a download is how "it says ready but will not transcribe" starts.
+    for extra in catalog.requirements(spec) {
+        if Downloader::is_present(extra, models_dir) {
+            continue;
+        }
+        println!("fetching {} (needed by {})", extra.display_name, spec.display_name);
+        downloader
+            .fetch(extra, models_dir, report_progress, &cancel)
+            .map_err(Failure::from)?;
+    }
+
+    println!("fetching {}", spec.display_name);
 
     let state = downloader
         .fetch(spec, models_dir, report_progress, &cancel)

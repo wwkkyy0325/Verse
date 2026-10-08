@@ -2656,3 +2656,59 @@ matters — whether 继续 really continues rather than starting over, are all s
 unverified.
 
 404 tests, clippy clean, `svelte-check` 0 errors.
+
+---
+
+## 2026-10-08 — A fresh install could not transcribe anything
+
+Found by the maintainer on the **published draft**, which is the first time
+anything was ever installed rather than run from a checkout:
+
+```
+VAD model not found: silero_vad.onnx
+```
+
+**The VAD was unobtainable from the window.** Every transcription segments with
+Silero VAD, the pipeline looks for it at one fixed path
+(`Request::vad_for` — `<models>/silero-vad/silero_vad.onnx`), and it is not
+something a person chooses. It sat in `models.json` as a peer of the engines,
+and the window lists only models an engine can load — so it had no card, and
+there was no way to ask for it. A fresh install downloaded the default model,
+was told it was ready, and failed on the first file.
+
+Nobody saw it because no development machine has ever lacked
+`models/silero-vad/` — 2.3 MB, downloaded once, years of not being noticed.
+
+**Fixed by naming the dependency rather than by teaching two front ends about
+it.** `ModelSpec` gains `requires`, `sensevoice` and `qwen3-asr` name
+`silero-vad`, and the catalogue offers `all_present` (the question a front end
+actually has before starting a job) and `to_fetch` (what a download should
+actually download). The window's card, its three readiness guards and the CLI's
+`model fetch` all ask those instead of `is_present`.
+
+Hard-coding the VAD in the window and again in the CLI was the alternative, and
+it is the thing this project already has a rule against: *two callers inventing
+it separately is how the CLI and the window end up disagreeing.*
+
+**Verified end to end, not by reasoning about it.** Downloading into an empty
+directory:
+
+```
+fetching Silero VAD (needed by SenseVoice-Small (zh, en, yue, ja, ko))
+  silero_vad.onnx from modelscope: 2 / 2 MB  … done
+fetching SenseVoice-Small (zh, en, yue, ja, ko)
+  model.int8.onnx from hf-mirror: 0 / 239 MB  …
+```
+
+The VAD comes first, named, on its own mirror. Five new tests pin the rest:
+the two ASR models declare it, the VAD declares nothing (which is why one level
+of resolution is enough), the model is fetched before what it needs, and a
+requirement naming a model that is not in the catalogue — or naming itself — is
+refused at load. A typo there would otherwise not fail: `requirements` skips an
+id it cannot resolve, so it would silently not download and surface later as a
+model that says it is ready and does not work.
+
+**The two READMEs were wrong before this and are right now.** Both said the VAD
+comes with `verse model fetch sensevoice`. It did not.
+
+404 tests, clippy clean, `svelte-check` 0 errors.

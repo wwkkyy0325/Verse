@@ -176,7 +176,7 @@ fn transcribe(app: AppHandle, path: String) -> Result<(), String> {
         let ready = match Catalog::load_or_embedded(&models.join("catalog.json")) {
             Ok(catalog) => catalog
                 .find(&model)
-                .map(|spec| Downloader::is_present(spec, &models))
+                .map(|spec| catalog.all_present(spec, &models))
                 .unwrap_or(false),
             // A broken catalogue is not worth refusing to work over; the model
             // is either on disk or it is not, and the pipeline will say so.
@@ -279,7 +279,10 @@ fn models() -> Result<Vec<bridge::ModelChoice>, String> {
             id: spec.id.clone(),
             name: spec.display_name.clone(),
             description: spec.description.clone(),
-            present: Downloader::is_present(spec, &root),
+            // Not `is_present`: a card that says 已安装 for a model that
+            // cannot run is how a fresh install ended up unable to
+            // transcribe anything. See `ModelSpec::requires`.
+            present: catalog.all_present(spec, &root),
             bytes: spec.files.iter().filter_map(|file| file.size).sum(),
             default: spec.id == state::DEFAULT_MODEL,
         })
@@ -663,7 +666,7 @@ fn select_model(app: AppHandle, id: String) -> Result<(), String> {
         .find(&id)
         .ok_or_else(|| format!("模型清单里没有 {id} 这个模型。"))?;
 
-    if !Downloader::is_present(spec, &models_root) {
+    if !catalog.all_present(spec, &models_root) {
         return Err(format!("{id} 还没有下载完，先在左边的卡片里下载。"));
     }
 
@@ -804,15 +807,45 @@ fn fetch_model(app: AppHandle, model: String) -> Result<(), String> {
         return Err(format!("模型清单里没有 {model} 这个模型。"));
     };
 
-    if Downloader::is_present(spec, &models_root) {
+    if catalog.all_present(spec, &models_root) {
         return Err(format!("{model} 已经在本机了。"));
     }
+
+    // Whatever this model cannot run without. Fetched first, and quietly:
+    // these are small, they have no card of their own, and a second progress
+    // bar for two megabytes nobody chose would be noise. A failure still has
+    // to reach the window, though — it is why the download did not happen.
+    let needed: Vec<verse_model::ModelSpec> = catalog
+        .requirements(spec)
+        .into_iter()
+        .filter(|extra| !Downloader::is_present(extra, &models_root))
+        .cloned()
+        .collect();
 
     let reporting = app.clone();
     let wanted = model.clone();
     let spec = spec.clone();
 
     std::thread::spawn(move || {
+        for extra in &needed {
+            let done = matches!(
+                Downloader::new().fetch(extra, &models_root, |_| {}, &CancelToken::new()),
+                Ok(DownloadState::Ready)
+            );
+            if !done {
+                let _ = reporting.emit(
+                    UPDATE,
+                    Update::Download {
+                        model: wanted.clone(),
+                        download: DownloadView::Failed {
+                            reason: format!("{} 下载失败，这个模型还不能用。", extra.display_name),
+                        },
+                    },
+                );
+                return;
+            }
+        }
+
         // The whole model, not the file in flight. The downloader reports one
         // file at a time and knows nothing about the others, so its own figures
         // fill up once per file — Qwen3-ASR showed "44 MB" and looked finished
@@ -1209,6 +1242,7 @@ mod tests {
         ModelSpec {
             id: "sensevoice".to_string(),
             description: None,
+            requires: Vec::new(),
             display_name: "SenseVoice".to_string(),
             files: vec![
                 ModelFile {
@@ -1234,6 +1268,7 @@ mod tests {
             id: "sensevoice".to_string(),
             display_name: "SenseVoice-Small".to_string(),
             description: None,
+            requires: Vec::new(),
             files: vec![
                 ModelFile {
                     remote: "a.onnx".to_string(),
