@@ -199,17 +199,94 @@ unreachable through the proxy that day.
 The reported build was `n8.1.3-14-g330caae0c1-20261007`, recorded in
 `THIRD_PARTY_NOTICES.md` so the notice names what actually shipped.
 
-## What is not verified from here
+## 10. [x] The release built, on the second run
 
-**`release.yml` has now run once and failed.** Everything after step 3 is still
-untested: the `--config` merge, `tauri-action`, the Windows installer build, and
-whether a release is created at all. The step that failed is the step that is
-now a script and has been run — the rest has not.
+- [x] Run 2 of `release.yml`, on `cc45f87`. **Verify:** every step green —
+      quoted below.
 
-The `tagName` fix is still a source-derived claim about a runner rather than an
-observation of one — so is the sidecar name, which comes from reading
-`tauri-bundler`'s `Settings::copy_binaries` and has never been seen installed
-anywhere.
+| step | |
+|---|---|
+| 1 Set up job | success |
+| 2 `actions/checkout@v4` | success |
+| **3 ffmpeg — the LGPL build** | **success** |
+| 4 Declare the bundled ffmpeg for this build | success |
+| 5 `dtolnay/rust-toolchain@stable` | success |
+| 6 `Swatinem/rust-cache@v2` | success |
+| 7 `actions/setup-node@v4` | success |
+| 8 Frontend dependencies | success |
+| **9 Build and attach** | **success** |
+| 16–18 the three post steps | success |
+| 19 Complete job | success |
+
+Step 3 is the one that died in ninety seconds on run 1. It takes about that long
+to fail and a good deal longer to succeed — the whole run was around nine
+minutes, and the ffmpeg step passing was visible from the job page while
+`Build and attach` was still going.
+
+The only annotation on the job is a warning: `actions/checkout@v4` and
+`actions/setup-node@v4` target Node.js 20 and were forced onto Node.js 24. Not
+acted on here — changing the actions means another release run, and the warning
+is not an error yet. It will become one.
+
+**The draft release, on inspection:** `Verse v0.1.0`, drafted by
+`github-actions`, with
+
+| asset | size | |
+|---|---|---|
+| `Verse_0.1.0_x64-setup.exe` | 47.5 MB | NSIS |
+| `Verse_0.1.0_x64_en-US.msi` | 63.7 MB | WiX |
+| `Source code (zip)` / `(tar.gz)` | | GitHub adds these to every release |
+
+**And the ffmpeg is inside it, which is the part that had never been shown.**
+The installer size is the evidence, and it is arithmetic rather than a guess:
+
+| | bytes | `gzip -9` |
+|---|---|---|
+| `verse-app.exe` | 29,945,856 | 10.3 MiB |
+| `ffmpeg-x86_64-pc-windows-msvc.exe` | 134,092,288 | |
+| both together | 164,038,144 | 63.1 MiB |
+
+NSIS compresses with LZMA, typically 15–25% under `gzip -9`, which puts the
+expected installer near 49 MiB against an actual 47.5 MiB. Without the ffmpeg
+the whole payload gzips to 10 MiB and the installer would be single digits.
+Where the file *lands* is still unverified — that needs an install — but it is
+being packaged.
+
+### The wrong turn, recorded because it was expensive
+
+**A report that the release had no binaries was accepted too readily, and the
+reasoning built on it was wrong.** `GET /repos/{owner}/{repo}/releases`
+**excludes drafts from unauthenticated requests**, and there were *two* releases
+on the tag: the maintainer's, made by hand and published, carrying nothing; and
+the workflow's, a draft, carrying both installers. Only the first was visible
+from here.
+
+Reading `tauri-action`'s source gave what looked like a proof — a throw on empty
+artifacts, a `core.setFailed` around the whole body, therefore "no upload means
+`tagName` was empty" — and it contradicted `head_branch: v0.1.0`, which said the
+ref *was* a tag. **That contradiction was the finding.** It meant the model was
+missing something, and the something was the second release.
+
+The lesson is narrower than "read the source": a proof built on *everything I
+can see* is only as good as the inventory, and the inventory had a hole in it
+that the API documents on the page nobody reads. The step log settled it in one
+line — `Couldn't find release with tag v0.1.0. Creating one.`
+
+## What is still not verified
+
+- **The installed program.** No release has been downloaded and run, so
+  `beside(exe)` — the lookup for the ffmpeg the installer is supposed to place —
+  has still never executed against a real installation. It is the one part of
+  the sidecar chain that a local run cannot reach.
+- **The licence files inside the bundle.** `bundle.resources` names six paths and
+  all six exist in the repository, but nothing here has opened an installer to
+  see where they land.
+- **Where the installer puts things.** The package demonstrably carries the
+  ffmpeg; nothing has run it. That and the entry above are the same missing
+  step, and it is the only one left.
+- **A tag is now load-bearing.** `v0.1.0` had to be moved from `ff12817` to
+  `cc45f87` because the first run failed. Nothing was published from either, so
+  the move cost nothing — but the next tag will not have that luxury.
 
 ## Follow-ups, recorded rather than done
 

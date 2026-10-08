@@ -2472,3 +2472,59 @@ has still never executed. The tag `v0.1.0` exists, the run failed, and no releas
 was created.
 
 388 tests, clippy clean, `svelte-check` 0 errors.
+
+---
+
+## 2026-10-08 — The release built
+
+Second run of `release.yml`, on `cc45f87`, on the tag moved from the failed
+commit. **Every step green**, including the one that had died at ninety seconds:
+
+| | |
+|---|---|
+| 3 ffmpeg — the LGPL build | success |
+| 9 Build and attach | success |
+
+Both of those had never executed. The `--config` merge worked, `tauri-action`
+built the installers, and it did not throw `No artifacts were found` — which,
+with `tagName` set, is what an empty artifact list does. So a draft release
+exists with at least one installer attached.
+
+**The draft, once seen:** `Verse v0.1.0`, drafted by `github-actions`, with
+`Verse_0.1.0_x64-setup.exe` (47.5 MB) and `Verse_0.1.0_x64_en-US.msi` (63.7 MB),
+plus the two source archives GitHub adds to everything.
+
+**The ffmpeg is inside it, and that is arithmetic rather than a guess.**
+`verse-app.exe` is 29,945,856 bytes and the bundled ffmpeg 134,092,288; together
+they `gzip -9` to 63.1 MiB. NSIS uses LZMA, typically 15–25% below that, which
+puts the expected installer near 49 MiB against an actual 47.5 MiB. Without the
+ffmpeg the payload gzips to 10 MiB and the installer would be single digits.
+
+**A wrong turn worth the ink.** Before the log arrived, a report that the
+release had no binaries was taken at face value, and a proof was built on it:
+`tauri-action` throws on an empty artifact list, `core.setFailed` wraps its whole
+body, therefore the step could only have gone green with `tagName` empty. That
+contradicted `head_branch: v0.1.0`. **The contradiction was the finding** — the
+inventory was incomplete, because `/releases` does not return drafts to
+unauthenticated requests and there were two releases on the tag: the
+maintainer's hand-made one, published and empty, and the workflow's draft with
+both installers. The step log settled it in one line: `Couldn't find release
+with tag v0.1.0. Creating one.`
+
+**Still open, and now the only thing:** nothing has been installed. Where the
+installer puts the ffmpeg, and whether `beside(exe)` finds it there, needs a real
+installation — the one link a local run cannot reach.
+
+**The tag moved, which is worth remembering.** `v0.1.0` was force-pushed from
+`ff12817` to `cc45f87`, because a tag points at a commit and the commit that
+failed cannot be the one a release is built from. It cost nothing this time —
+the first run published nothing, so there was no release to contradict. There is
+no such margin on the next one.
+
+One warning on the job, not acted on: `actions/checkout@v4` and
+`actions/setup-node@v4` target Node.js 20 and were forced onto Node.js 24.
+Another release run to silence a warning that is not yet an error is the wrong
+trade; it will have to be paid when it stops being a warning.
+
+388 tests, clippy clean, `svelte-check` 0 errors.
+
