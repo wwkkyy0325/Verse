@@ -543,3 +543,21 @@ Stated so they do not creep in:
    Worth doing before packaging, and not before: moving 1.2 GB of models on an
    existing install is a real cost to impose for a tidiness that only matters
    once there is an installer.
+
+   **Answered, 2026-10-08 — and by then it was more than tidiness.** The models
+   moved to `<data dir>/models`, resolved by `models_dir()`, so they sit beside
+   the cache and the history. Packaging had happened, and it turned the question
+   from housekeeping into a bug: the `.msi` installs **per machine**, into
+   `C:\Program Files\Verse`, and a standard user cannot create a directory
+   there. A `.msi` install could not download a model at all. The `.exe`
+   installs per user into `%LOCALAPPDATA%\Verse`, where "beside the executable"
+   happened to already be the right place — which is why the fault went
+   unnoticed: one of the two installers could not have shown it.
+
+   No migration, and none needed: 0.1.0 is the first release and no install
+   exists yet. Anyone running from source is already pointed at a checkout by
+   `VERSE_MODELS`.
+
+   The uninstall side is settled in `crates/verse-app/nsis-hooks.nsh`: Tauri's
+   uninstaller already offers a "delete app data" checkbox, and the hook extends
+   it to the directory this application actually writes.

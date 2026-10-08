@@ -2528,3 +2528,74 @@ trade; it will have to be paid when it stops being a warning.
 
 388 tests, clippy clean, `svelte-check` 0 errors.
 
+---
+
+## 2026-10-08 — A model the window could not see, and a model in the wrong place
+
+Two reports, one day after the first release. `tasks/model-availability.md` has
+the detail; this is what changed and why.
+
+### The card did not know
+
+Download a model and the window kept saying 需要下载 until it was restarted.
+`model.present` gates whether a card can be picked, it is computed by the backend
+from the files on disk, and the window asked for it **once, at startup** — so a
+download that finished during the session wrote a gigabyte and told nobody who
+was listening. `importModel` had the same hole from the other direction.
+
+Both now re-ask. Re-asking rather than setting the flag locally, because a local
+guess stops being true the first time a model is removed underneath it.
+
+A comment in `fetch_model` had been claiming this was handled: "The panel's card
+has to stop saying 需要下载" above a `push_state`, which pushes the file roster
+and the screen and no part of the catalogue. Corrected — the comment was the
+reason nobody looked.
+
+### The model was in the install directory, and that was a bug and not a mess
+
+The second report was "卸载的时候没删除模型". The leftover was the smaller half.
+
+**The `.msi` installs per machine, into `C:\Program Files\Verse`**, and models
+resolved to `C:\Program Files\Verse\models` — where a standard user cannot create
+a directory. A `.msi` install could not download a model at all. The `.exe`
+installer takes the other path, `%LOCALAPPDATA%\Verse`, where "beside the
+executable" happened to already be correct; **one of the two installers could not
+have shown the fault**, which is how it reached a release.
+
+`models_dir()` now resolves `VERSE_MODELS`, else `<per-user data dir>/models` —
+beside the cache and the history, which have used that directory since October.
+`ui-design.md` §11 had asked the question; it is closed. No migration, because
+0.1.0 was the first release and there is nothing to migrate.
+
+### The checkbox was already there
+
+Asked what uninstall should do with 1.2 GB of weights, the maintainer asked for a
+box to tick. Tauri's uninstaller already has one, labelled **Delete app data** —
+and it removes `%APPDATA%\<bundle id>`, a directory this application has never
+written to. So it was tickable, honest, and removed nothing.
+
+`nsis-hooks.nsh` reads the same variable and removes `%LOCALAPPDATA%\Verse` when
+it was ticked and not otherwise. Four lines that make the box mean what it says.
+The `.msi` has no equivalent hook, so that installer keeps the weights.
+
+### The hook was falsified, not assumed
+
+An invalid command appended to the `.nsh` fails the build with
+`!include: error in script: ... on line 32`. That is how we know `makensis` reads
+the file rather than skipping it — every hook in the template is guarded by
+`!ifmacrodef`, so a file that was included and never reached would compile
+silently. This is the same class of mistake as the release step that had never
+been run anywhere, and it was worth thirty seconds to not make it twice.
+
+**A number came out of it.** The debug NSIS bundle with no ffmpeg is 9.02 MiB —
+the first measurement of the "without it, the installer would be single digits"
+half of the argument that the 47.5 MiB release carries the 128 MiB ffmpeg.
+
+### Still unverified
+
+The uninstaller has not been run and the checkbox has not been ticked. The
+refresh needs a click — this repository has no frontend test runner, so it is
+checked by types and by reading. And the `.msi`, the one install that was
+actually broken, has not been installed by anyone.
+
+388 tests, clippy clean, `svelte-check` 0 errors.

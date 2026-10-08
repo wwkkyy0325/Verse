@@ -226,7 +226,9 @@ Every format decision collapses into one: use ffmpeg, and never link it.
 
 **Why a child process, not a library.** The no-leak constraint (§3, C2) is the second hard requirement in this project. Linking FFmpeg's C libraries is the largest FFI surface available and would contradict it outright. Running `ffmpeg` as a child and reading raw PCM from its stdout gives full coverage with *stronger* isolation than even a careful binding: a leak, crash, or memory blow-up inside ffmpeg cannot reach this process. Dropping the decoder kills the child.
 
-**The cost.** Verse now depends on an ffmpeg executable. Discovery order is `VERSE_FFMPEG` → `PATH` → a copy shipped beside the binary. Only the third satisfies "install and run", and it is a P1b task; P1a uses whatever the machine already has.
+**The cost.** Verse now depends on an ffmpeg executable. Discovery order is `VERSE_FFMPEG` → a copy shipped beside the binary → `PATH`. The second is what satisfies "install and run", and it wins over `PATH`: the copy that ships is the one the release was built and tested against, and a user who wants their own says so with `VERSE_FFMPEG`, which is still checked first. (This line read `PATH` before the shipped copy until 2026-10-08, which was the order in the comment the code shipped with — and was the opposite of what the code did.)
+
+The bundled copy is an **LGPLv3** build placed by the installer as a sidecar. Which build, and how the licence is honoured, is `THIRD_PARTY_NOTICES.md`'s job.
 
 That obligation is real rather than a footnote: requiring a separate ffmpeg install would break the zero-configuration goal (§3, C6) harder than any model download, because it is a system-level install rather than a file fetch.
 

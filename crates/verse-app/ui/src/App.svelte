@@ -217,6 +217,12 @@
               if (view.screen.kind === "needsModel" && view.screen.modelId === update.model) {
                 view.screen = { ...view.screen, download: update.download };
               }
+              // The third reading, and the one that was missing: whether the
+              // model can now be chosen. `present` is the backend's answer and
+              // the panel only ever asked once, at startup — so a download that
+              // finished while the window was open left its card saying
+              // 需要下载 and refusing to be picked until the next launch.
+              if (update.download.state === "ready") void refreshCatalog();
               break;
             case "cleared":
               view.segments = [];
@@ -479,8 +485,33 @@
 
     try {
       await importModel(picked);
+      // A model arriving by hand is the same event as one arriving over the
+      // network, as far as the panel is concerned.
+      await refreshCatalog();
     } catch (cause) {
       message = String(cause);
+    }
+  }
+
+  /// Ask the backend what is on disk now.
+  ///
+  /// `present` is computed there from the files themselves, and the panel used
+  /// to take that reading once, at startup. Anything that puts a model in place
+  /// during the session — a finished download, a folder chosen by hand — has to
+  /// ask again, or its card keeps saying 需要下载 and stays unselectable until
+  /// the window is reopened.
+  async function refreshCatalog() {
+    try {
+      const fresh = await models();
+      catalog = fresh;
+      // The choice is an id, so replacing the list does not disturb it. Only an
+      // empty one needs filling, which happens when the first reading found no
+      // catalogue at all.
+      if (chosen === "") {
+        chosen = fresh.find((model) => model.default)?.id ?? fresh[0]?.id ?? "";
+      }
+    } catch (cause) {
+      message = `读不到模型清单：${cause}`;
     }
   }
 

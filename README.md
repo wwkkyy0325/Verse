@@ -120,6 +120,11 @@ cargo build --release
 `verse model list` 看已装了什么、占多少磁盘，`verse model remove <id>` 删掉一个，
 `verse model clean` 清掉下了一半的。
 
+权重放在 `%LOCALAPPDATA%\Verse\models`，和缓存、历史记录在一起 —— **不在程序旁边**。
+`.msi` 装到 `C:\Program Files`，普通用户写不进去，模型放那儿根本下不动。这样放还有个
+好处:卸载器可以问你一句 —— `.exe` 安装程序的 **Delete app data** 勾上就删，不勾就留着，
+下次重装不用再花 228 MB 到 1 GB 重下一遍。
+
 **发布包只出 Windows。** macOS 和 Linux 都不做也不支持，两边理由不同，都写在
 `.github/workflows/release.yml` 里：macOS 那边根本没有可用的 LGPL 版 ffmpeg；Linux
 那边是**构建其实过了**——挂掉的是一个在 Windows 路径上写的测试，不是程序——但多一个

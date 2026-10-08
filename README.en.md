@@ -146,6 +146,14 @@ source is, are in `THIRD_PARTY_NOTICES.md`.
 and how much disk it uses, `verse model remove <id>` deletes one, `verse model
 clean` clears half-finished downloads.
 
+Weights go under `%LOCALAPPDATA%\Verse\models`, beside the cache and the
+transcript history — **not** beside the program. The `.msi` installs into
+`C:\Program Files`, which a standard user cannot write to, and models there
+would simply not download. It also means the uninstaller gets to ask: the `.exe`
+installer's **Delete app data** box removes them, and leaving it unticked keeps
+them for a reinstall rather than throwing away 228 MB or 1 GB over a
+reinstall.
+
 **Releases are built for Windows only.** macOS and Linux are neither built nor
 supported, for two different reasons, both written out in
 `.github/workflows/release.yml`: macOS has no usable LGPL ffmpeg build at all,

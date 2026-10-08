@@ -19,6 +19,12 @@
 use std::path::{Path, PathBuf};
 
 /// The folder name, in both places.
+///
+/// It is also spelled out in `crates/verse-app/nsis-hooks.nsh`, which deletes
+/// `%LOCALAPPDATA%\Verse` when the uninstaller's "delete app data" box is
+/// ticked. An NSIS script cannot read a Rust constant, so the two have to agree
+/// by hand — renaming this without renaming that leaves the checkbox deleting
+/// nothing, silently.
 pub const FOLDER: &str = "Verse";
 
 /// The inputs the resolution is a function of.

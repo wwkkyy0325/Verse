@@ -61,21 +61,38 @@ pub struct HardwareSummary {
 ///
 /// `VERSE_MODELS` wins when set, which is how a development build finds the
 /// checkout's `models/` directory — the executable sits several levels away in
-/// `target/`. Otherwise it is a `models` directory beside the executable, which
-/// is the installed layout.
+/// `target/`. Otherwise it is `models` under the per-user data directory, the
+/// same one the cache, the resume logs and the history already use.
 ///
-/// This is one of the questions `ui-design.md` §11 leaves open: a real install
-/// should use per-user application data. Nothing here should be built on
-/// until that is settled.
+/// **It used to be a `models` directory beside the executable, and that was
+/// wrong twice over.** The `.msi` installs per-machine, into
+/// `C:\Program Files\Verse`, where a standard user cannot create a directory —
+/// so a `.msi` install could not download a model at all. And the weights
+/// belong to the person, not to the program: they should not live somewhere the
+/// installer owns and an uninstall takes away with it.
+///
+/// `ui-design.md` §11 asked this question; this function is the answer to it.
 fn models_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("VERSE_MODELS") {
-        return PathBuf::from(dir);
-    }
+    models_root(
+        // An empty `VERSE_MODELS` means "I did not set this", the same reading
+        // `verse_store::dirs` gives its own variables.
+        std::env::var_os("VERSE_MODELS")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from),
+        &verse_store::Roots::from_env(),
+    )
+}
 
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|parent| parent.join("models")))
-        .unwrap_or_else(|| PathBuf::from("models"))
+/// The resolution above, as a function of what was read from the environment.
+///
+/// Split out for the reason `verse_store::dirs` gives for doing the same: the
+/// fallbacks only run on somebody else's machine, and a branch nobody can run
+/// is a branch nobody has tested.
+fn models_root(configured: Option<PathBuf>, roots: &verse_store::Roots) -> PathBuf {
+    match configured {
+        Some(dir) => dir,
+        None => verse_store::data_dir(roots).join("models"),
+    }
 }
 
 /// Probe the machine.
@@ -775,8 +792,14 @@ fn fetch_model(app: AppHandle, model: String) -> Result<(), String> {
             }
         };
 
-        // The panel's card has to stop saying 需要下载, whether or not a job
-        // was waiting on it.
+        // The file screens, whether or not a job was waiting on this model.
+        //
+        // **Not the model cards.** They read a catalogue the window fetches by
+        // a command of its own, and this push carries no part of it. An earlier
+        // version of this comment claimed otherwise, and the window believed it:
+        // the card went on saying 需要下载 and refusing to be picked until the
+        // next launch. The window re-reads the catalogue when the `ready` event
+        // reaches it; this line is for the screens that are not that card.
         bridge::push_state(&app);
 
         if start {
@@ -964,6 +987,55 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create scratch dir");
         dir
+    }
+
+    #[test]
+    fn models_live_under_the_users_data_directory() {
+        // Two failures in one assertion. A per-machine `.msi` installs into
+        // `C:\Program Files`, where a standard user cannot create a directory,
+        // so models beside the executable meant a `.msi` install could never
+        // download one. And weights sitting in the install directory are taken
+        // away by an uninstall that was only ever meant to remove the program.
+        let roots = verse_store::Roots {
+            local_app_data: Some(PathBuf::from("C:/Users/someone/AppData/Local")),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            models_root(None, &roots),
+            PathBuf::from("C:/Users/someone/AppData/Local/Verse/models")
+        );
+    }
+
+    #[test]
+    fn an_explicit_model_directory_beats_the_data_directory() {
+        // `VERSE_MODELS` is how a checkout's `models/` is found, and how anyone
+        // who has staged weights somewhere else says so.
+        let roots = verse_store::Roots {
+            local_app_data: Some(PathBuf::from("/data")),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            models_root(Some(PathBuf::from("models")), &roots),
+            PathBuf::from("models")
+        );
+    }
+
+    #[test]
+    fn models_follow_the_data_directorys_own_fallbacks() {
+        // Not a second set of rules: whatever `data_dir` decides is where
+        // models go, so a machine without local app data is not a case this
+        // function has to know about.
+        let roots = verse_store::Roots {
+            home: Some(PathBuf::from("/home/me")),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            models_root(None, &roots),
+            PathBuf::from("/home/me/.verse/models")
+        );
     }
 
     fn touch(path: &Path) {

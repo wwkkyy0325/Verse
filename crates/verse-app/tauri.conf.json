@@ -47,6 +47,11 @@
       "../../licences/sherpa-onnx-Apache-2.0.txt": "licences/sherpa-onnx-Apache-2.0.txt",
       "../../licences/LGPL-3.0.txt": "licences/LGPL-3.0.txt",
       "../../licences/GPL-3.0.txt": "licences/GPL-3.0.txt"
+    },
+    "windows": {
+      "nsis": {
+        "installerHooks": "nsis-hooks.nsh"
+      }
     }
   }
 }
