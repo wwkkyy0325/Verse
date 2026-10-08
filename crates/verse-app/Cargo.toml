@@ -27,7 +27,11 @@ verse-pipeline.workspace = true
 # resolves where a transcript is saved, which is not the pipeline's business.
 verse-store.workspace = true
 
-tauri = { version = "2", features = [] }
+# `tray-icon` is not in Tauri's default feature set, and is the whole reason
+# the window can be closed without ending the program. It is what pulls in the
+# `tray-icon` and `muda` crates — `muda` is already compiled as an internal
+# dependency, so the addition is one crate that was in the lockfile anyway.
+tauri = { version = "2", features = ["tray-icon"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri-plugin-dialog = "2"

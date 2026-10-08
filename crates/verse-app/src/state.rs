@@ -574,6 +574,71 @@ impl AppState {
         self.job.is_some()
     }
 
+    /// Start the next waiting file, when nothing is already running.
+    ///
+    /// [`Self::take_next`] is what the bridge calls on the way out of a job, so
+    /// it may assume the slot is free. This is the other caller — the 继续
+    /// button, for a queue that came back from a previous process and has
+    /// nothing in front of it to advance from — and it checks rather than
+    /// assumes. Taking the slot out from under a running job would be two jobs
+    /// on one slot, which stops the first.
+    pub fn start_next(&mut self) -> Option<PathBuf> {
+        if self.running.is_some() {
+            return None;
+        }
+        self.take_next()
+    }
+
+    /// How many files are being worked on or waiting for the slot.
+    ///
+    /// Read off `running` rather than `job`, and for the reason [`Self::enqueue`]
+    /// and `file_chosen` both give: a file occupies the slot from the moment it
+    /// is accepted, and `job` stays empty until the pipeline says `JobStarted`.
+    /// Asking `is_running` here would call the window idle during exactly the
+    /// window a quit is most likely to land in.
+    pub fn pending(&self) -> usize {
+        usize::from(self.running.is_some()) + self.queue.len()
+    }
+
+    /// Those same files, in the order they would have run.
+    ///
+    /// Paths rather than indices, because this outlives the list it indexes:
+    /// it is written to disk on the way out and read back by a different
+    /// process, where the positions mean nothing.
+    pub fn unfinished(&self) -> Vec<PathBuf> {
+        self.running
+            .and_then(|index| self.files.get(index))
+            .map(|entry| entry.input.clone())
+            .into_iter()
+            .chain(
+                self.queue
+                    .iter()
+                    .filter_map(|index| self.files.get(*index))
+                    .map(|entry| entry.input.clone()),
+            )
+            .collect()
+    }
+
+    /// Put back files an earlier process was interrupted part-way through.
+    ///
+    /// **Waiting, not started.** A window that began recognising twenty files
+    /// the moment it opened would be doing work nobody asked for, and after a
+    /// quit somebody chose, doing it again is the opposite of what they meant.
+    /// They come back as rows in exactly the state they were in when the
+    /// process ended.
+    ///
+    /// The caller has already dropped paths that are no longer on disk, for the
+    /// reason [`Restored`] gives: deciding that is I/O, and this module does
+    /// none.
+    pub fn restore_pending(&mut self, files: Vec<PathBuf>) {
+        for input in files {
+            // Ignored when it is already in the list, which is what `enqueue`
+            // answers and what a duplicate in the record would cause.
+            let _ = self.enqueue(input);
+        }
+    }
+
+
     /// Queue a file behind the running job.
     ///
     /// Answers whether it was accepted. The same path is not queued twice:
@@ -1434,6 +1499,88 @@ mod tests {
 
         assert!(matches!(state.files()[1].screen, Screen::Queued { .. }));
         assert!(matches!(state.files()[2].screen, Screen::Queued { .. }));
+    }
+
+    #[test]
+    fn what_is_unfinished_names_the_files_that_would_have_run() {
+        // The record that outlives the process: written on the way out, read
+        // back by the next launch. It has to name files rather than positions,
+        // and it has to include the running one — which is the file most likely
+        // to be half-done and the one worth the most.
+        let mut state = AppState::new();
+        assert_eq!(state.pending(), 0);
+        assert!(state.unfinished().is_empty());
+
+        for name in ["a.wav", "b.wav", "c.wav"] {
+            state.file_chosen(input(name), true);
+        }
+
+        assert_eq!(state.pending(), 3);
+        assert_eq!(
+            state.unfinished(),
+            vec![input("a.wav"), input("b.wav"), input("c.wav")],
+            "the running one first, then the queue in its order"
+        );
+    }
+
+    #[test]
+    fn a_file_is_unfinished_before_the_pipeline_has_said_anything() {
+        // The gap the window lives in for a moment after a drop: the file
+        // occupies the slot, and `job` is still empty because `JobStarted` has
+        // not arrived. `is_running` would report idle here — which is exactly
+        // the moment somebody closing the window would be told there was
+        // nothing to lose.
+        let mut state = AppState::new();
+        state.file_chosen(input("a.wav"), true);
+
+        assert!(!state.is_running(), "no job id has arrived yet");
+        assert_eq!(state.pending(), 1, "but there is work in flight");
+        assert_eq!(state.unfinished(), vec![input("a.wav")]);
+    }
+
+    #[test]
+    fn a_finished_job_leaves_nothing_unfinished() {
+        // Otherwise every quit would claim it was about to throw work away.
+        //
+        // The job ends at `TranscriptFinal`, not at `JobFinished` — a clean
+        // finish carries its result in the former, and the latter is
+        // deliberately a no-op.
+        let mut state = working();
+        assert_eq!(state.pending(), 1);
+
+        state.apply(&Event::TranscriptFinal {
+            job: JobId(1),
+            transcript: Transcript::default(),
+        });
+
+        assert_eq!(state.pending(), 0);
+        assert!(state.unfinished().is_empty());
+    }
+
+    #[test]
+    fn restoring_a_queue_puts_it_back_in_order_and_starts_none_of_it() {
+        // Waiting, not running: a window that began recognising files the
+        // moment it opened would be doing work nobody asked for.
+        let mut state = AppState::new();
+        state.restore_pending(vec![input("a.wav"), input("b.wav")]);
+
+        assert_eq!(state.pending(), 2);
+        assert!(!state.is_running());
+        assert!(matches!(state.files()[0].screen, Screen::Queued { .. }));
+        assert_eq!(state.selected(), None, "nothing is pulled onto the screen");
+    }
+
+    #[test]
+    fn the_engine_is_part_of_what_was_interrupted() {
+        // Not decoration. The resume log's key is a digest of the settings and
+        // the input, and the engine is one of the settings — so a queue put
+        // back under a different engine misses every key and redoes the file
+        // the confirmation promised would be kept.
+        let mut state = AppState::new();
+        let _ = state.set_model("qwen3-asr".to_string());
+        state.file_chosen(input("a.wav"), true);
+
+        assert_eq!(state.model(), "qwen3-asr");
     }
 
     #[test]

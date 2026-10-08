@@ -202,6 +202,19 @@ export function cancel(): Promise<void> {
   return invoke<void>("cancel");
 }
 
+/**
+ * Start the next file waiting in the queue.
+ *
+ * The queue advances by itself as jobs finish; this is for the one that came
+ * back from a previous session and has nothing in front of it to advance from.
+ * Until it is called those rows wait, deliberately — a window that started
+ * recognising a batch the moment it opened would be doing work nobody asked
+ * for.
+ */
+export function resumeQueue(): Promise<void> {
+  return invoke<void>("resume");
+}
+
 /** A file the window will not hand over, and why. Mirrors `Refusal`. */
 export interface Refusal {
   file: string;

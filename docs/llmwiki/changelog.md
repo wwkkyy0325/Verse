@@ -2599,3 +2599,60 @@ checked by types and by reading. And the `.msi`, the one install that was
 actually broken, has not been installed by anyone.
 
 388 tests, clippy clean, `svelte-check` 0 errors.
+
+---
+
+## 2026-10-08 — The window stops being the program
+
+The maintainer asked for a tray, with the close button extended into "hide" and
+"quit", and the logic around it finished. `tasks/tray.md` has the detail.
+
+**What was actually wrong.** Nothing handled `CloseRequested`, `RunEvent` or
+`on_exit`, and `run()` was a bare `Builder::default()...run(...)`. Closing the
+window was Tauri's default, so the process ended — and a ten-minute
+transcription went with it: no partial result, no warning, and the only way to
+keep a job alive was to leave a window open and not touch it.
+
+**The tray is the vehicle, not the point.** It exists so that closing is a
+choice, and it carries the interrupted queue back.
+
+### Quitting does not lose the work, and that is why the dialog can be honest
+
+Checked before designing anything: the pipeline flushes a resume log on every
+span and the GUI already used it. So the confirmation says what is kept and
+where to find it, rather than threatening to throw away ten minutes of
+recognition. `design.md` §4.9 gains that as a second reader — until now the log
+was crash recovery, and quitting is a deliberate act that leaves it on purpose.
+
+**One correctness catch made while writing the restore, not after.** The resume
+log's key is a digest of the settings *and* the input, and the engine is one of
+the settings. A queue put back under a different engine would miss every key and
+redo the work — so the interrupted queue carries the engine with it.
+
+### The two dialogs are constrained by where they run
+
+Both go through `show(callback)`, never `blocking_show`: the handlers are on the
+main thread, and `tauri-plugin-dialog`'s own documentation says blocking there
+"will freeze your application". And both are **native** dialogs rather than
+anything in the webview, because the window may be hidden at the moment the
+question is asked — from the tray, it usually is.
+
+### One thing taken off a "do not do this" list
+
+`ui-design.md` §10 named the tray icon among things deliberately out of scope.
+It came off, and the entry records why: not a change of taste, but that the
+absence of it was killing running work. The same edit adds the reason live
+subtitles stay out — Windows 11's Live Captions already captions system audio in
+Chinese, on device, for free.
+
+### Verified, and not
+
+`cargo build -p verse-app` then running it: **still alive after twelve seconds**,
+which means `setup()` returned `Ok` and the tray was created. A tray that cannot
+be built fails there and takes the application with it.
+
+Nobody has clicked anything. The tray by eye, both dialogs, and — the one that
+matters — whether 继续 really continues rather than starting over, are all still
+unverified.
+
+404 tests, clippy clean, `svelte-check` 0 errors.

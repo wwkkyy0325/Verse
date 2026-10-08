@@ -85,3 +85,22 @@ scripts under `tools/`, so they can be run here too.
 
 Model weights and test audio are gitignored and are not in the repository; see
 `design.md` §6 for how they are fetched.
+
+### Running the window
+
+```
+cd crates/verse-app
+node ui/node_modules/@tauri-apps/cli/tauri.js dev
+```
+
+**Not `npx tauri dev`.** The Tauri project root is `crates/verse-app`, which has
+no `package.json` — the frontend and its `node_modules` are one level down in
+`ui/`, and the config is one level up from them. `npx` looks for a local package
+and finds none, and fails with `could not determine executable to run`.
+
+**Not a plain `cargo build` either, and this one is worse because it seems to
+work.** Without the environment `tauri dev` sets, `generate_context!` still
+produces a *dev* binary — one that loads `devUrl`, the Vite server — and with
+nothing serving that address the window opens on `ERR_CONNECTION_REFUSED`. The
+process is alive, the tray is there, and the application is not. Everything
+below the window is real; the window is a browser error page.

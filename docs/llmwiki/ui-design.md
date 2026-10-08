@@ -501,9 +501,18 @@ Stated so they do not creep in:
   `design.md` C4's floor is about. The queue is what makes dropping a folder a
   single gesture rather than a way to cancel your own work.
 - Transcript editing. The result is exported, not edited.
-- Live subtitles, translation, recording.
-- Custom title bar, tray icon, global hotkey — the latter is out of the
-  project entirely (see `design.md` §2).
+- Live subtitles, translation, recording. **Still out, and now for a reason
+  worth recording:** Windows 11's Live Captions already captions system audio,
+  in Chinese, on device, for free, from 22H2 onward — and translation on
+  Copilot+ hardware. Doing it again would be duplicating the operating system
+  for a small win. See `tasks/tray.md` for what that leaves.
+- Custom title bar, global hotkey — the latter is out of the project entirely
+  (see `design.md` §2).
+- ~~Tray icon.~~ **Reversed, 2026-10-08.** It was on this list, and the reason
+  it came off is not a change of taste: with nothing handling `CloseRequested`,
+  closing the window ended the process, so a ten-minute transcription died with
+  the window — no partial result, no warning. The tray is what makes closing a
+  choice, and it carries the interrupted queue back. See `tasks/tray.md`.
 
 ## 11. Open questions
 

@@ -30,6 +30,7 @@
     onUpdate,
     probeHardware,
     reset,
+    resumeQueue,
     retry,
     reveal,
     select,
@@ -145,6 +146,11 @@
   /// available. Pressing one then did nothing but raise an error, because the
   /// backend knows better than the window does.
   const busy = $derived(view.entries.some((entry) => entry.state === "working"));
+
+  /// Rows waiting for the slot. Non-zero on its own means a queue came back
+  /// from a previous process, because a queue belonging to this session always
+  /// has something running in front of it.
+  const waiting = $derived(view.entries.filter((entry) => entry.state === "queued").length);
 
   /// The rows the filter lets through, with the index they keep in the roster.
   ///
@@ -776,7 +782,17 @@
 
       <!-- Pinned, not scrolling with the list it adds to. A button that moves
            as the list grows is a button people have to go looking for. -->
-      <div class="shrink-0 border-t px-4 py-3">
+      <div class="shrink-0 space-y-2 border-t px-4 py-3">
+        <!-- A queue left over from a previous session. It is not started by
+             itself: that is the whole reason it waits. -->
+        {#if waiting > 0 && !busy}
+          <div class="bg-muted/40 rounded-md border px-3 py-2">
+            <p class="text-muted-foreground text-xs">上次有 {waiting} 个文件没跑完</p>
+            <Button class="mt-2 w-full" size="sm" onclick={() => void resumeQueue()}>
+              继续
+            </Button>
+          </div>
+        {/if}
         <Button class="w-full" onclick={() => void pick()}>添加文件</Button>
       </div>
 

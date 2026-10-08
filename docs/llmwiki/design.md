@@ -308,6 +308,15 @@ does not expose the detector's internal state — but skips the recognition,
 which is the dominant cost. If a span's identity does not match, it is
 recognised again. It is never approximated, and it is never fabricated.
 
+**A second reader, added 2026-10-08.** The window can now be closed without
+ending the process (`tasks/tray.md`), so the log is no longer only the crash
+recovery it was written as: quitting with work in flight is a deliberate act
+that leaves the log behind on purpose, and the files it was working through are
+written to `pending.json` beside it and put back as waiting rows on the next
+launch. The key is the settings *and* the input, so the queue carries the engine
+with it — a queue restored under a different engine would miss every key and
+redo the work the confirmation dialog promised would be kept.
+
 ### 4.10 Model residency: `ModelKeeper`
 
 A model is the largest thing this program holds — 228 MB for the default, about

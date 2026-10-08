@@ -560,6 +560,14 @@ pub fn push_state(app: &AppHandle) {
             state: StateView::of(&state),
         },
     );
+
+    // What is unfinished, kept in step here because this is the one place every
+    // move outside the bus already passes through. Written unconditionally
+    // rather than compared against the last write first: this runs on commands
+    // and on job boundaries — a dozen times in a session — and not on the
+    // progress path, which is the one that fires often enough to care.
+    let _ = crate::settings::Pending::of(state.model().to_string(), state.unfinished())
+        .save(&crate::pending_path());
 }
 
 /// Start the thread that turns bus events into window updates.

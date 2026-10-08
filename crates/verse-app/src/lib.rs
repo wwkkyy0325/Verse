@@ -17,6 +17,8 @@
 mod about;
 mod autosave;
 mod bridge;
+mod settings;
+mod tray;
 
 
 // The drop-a-file path is wired end to end. The rest of the state machine —
@@ -289,6 +291,16 @@ fn history_path() -> PathBuf {
     verse_store::data_dir(&verse_store::Roots::from_env()).join("history.json")
 }
 
+/// Where the window's preferences live.
+pub(crate) fn settings_path() -> PathBuf {
+    verse_store::data_dir(&verse_store::Roots::from_env()).join("settings.json")
+}
+
+/// Where the list of interrupted files lives.
+pub(crate) fn pending_path() -> PathBuf {
+    verse_store::data_dir(&verse_store::Roots::from_env()).join("pending.json")
+}
+
 /// The argument `explorer` needs to open a folder with this file selected.
 ///
 /// Quoted here and not by `Command::arg`, which quotes the whole argument
@@ -489,6 +501,50 @@ fn restore_history(app: &AppHandle) {
         .restore(restored);
 }
 
+/// Put back the files the last process never finished.
+///
+/// The record is skipped entirely when there is nothing in it, which is the
+/// usual case and the one that must not write anything.
+fn restore_pending(app: &AppHandle) {
+    let record = settings::Pending::load(&pending_path());
+    if record.files.is_empty() {
+        return;
+    }
+
+    // The engine comes back too, because the resume log is keyed on it and a
+    // queue resumed under a different one would redo the work. Checked against
+    // the registry first: a record written by a version whose engines have
+    // since changed should run under the default rather than refuse to start.
+    let mut registry = verse_core::Registry::new();
+    verse_asr::register_builtin_engines(&mut registry);
+
+    // Scoped so the lock is released before the push below — `push_state` takes
+    // the same mutex, and the standard one is not reentrant.
+    {
+        let app_state = app.state::<App>();
+        let mut state = app_state.state.lock().expect("state mutex poisoned");
+
+        if !record.engine.is_empty() && registry.engine(&record.engine).is_some() {
+            let _ = state.set_model(record.engine.clone());
+        }
+
+        // Filtered here and not there: the record is a list of paths, and one
+        // that has been moved since is not work waiting to be done — but
+        // finding that out is a question for the filesystem, and the state
+        // module does not touch it.
+        let still_there: Vec<PathBuf> = record
+            .files
+            .into_iter()
+            .filter(|input| input.is_file())
+            .collect();
+        state.restore_pending(still_there);
+    }
+
+    // Rewrite the record in the form the restore left it: a path that has been
+    // moved since is dropped there, and the file should stop claiming it.
+    bridge::push_state(app);
+}
+
 /// Whether the demonstration can be run at all.
 ///
 /// Asked on mount so the window can offer it *without* running it. It used to
@@ -637,6 +693,35 @@ fn select_model(app: AppHandle, id: String) -> Result<(), String> {
         // The state refused, which it only does while a job holds the model.
         // Saying so is better than a picker that silently does not take.
         Err("正在转写，先等它结束或者取消，再换模型。".to_string())
+    }
+}
+
+/// Start the next file waiting in the queue.
+///
+/// The queue normally advances on its own: `take_next` is called by the bridge
+/// as a job finishes. This command exists for the one queue that has nothing in
+/// front of it — the files a previous process was interrupted part-way through,
+/// put back as waiting rows by `restore_pending`. Until this is called they sit
+/// there, which is deliberate: a window that started recognising a batch the
+/// moment it opened would be doing work nobody asked for.
+///
+/// Returns as soon as the work is under way. Everything else arrives on
+/// [`UPDATE`], as `transcribe` does.
+#[tauri::command]
+fn resume(app: AppHandle) {
+    let models = models_dir();
+
+    let next = {
+        let app_state = app.state::<App>();
+        let mut state = app_state.state.lock().expect("state mutex poisoned");
+        state.start_next()
+    };
+
+    match next {
+        Some(input) => bridge::start(&app, input, models),
+        // Nothing waiting, or something already running. Either way the window
+        // is owed an answer, and the current state is the answer.
+        None => bridge::push_state(&app),
     }
 }
 
@@ -940,6 +1025,7 @@ pub fn run() {
 
             let handle = app.handle().clone();
             restore_history(&handle);
+            restore_pending(&handle);
             let bus = {
                 let state = handle.state::<App>();
                 state.bus.clone()
@@ -947,8 +1033,19 @@ pub fn run() {
 
             // One subscriber for the whole application. The forwarding thread
             // owns it and folds everything it receives into the state.
-            bridge::spawn_forwarder(handle, bus.subscribe_all());
+            bridge::spawn_forwarder(handle.clone(), bus.subscribe_all());
+
+            // **The window is not the program.** A long recording is minutes of
+            // work, and until there was a tray it died with the window: no
+            // partial result, no warning. Everything below is what makes
+            // closing the window a choice rather than an accident.
+            tray::build(&handle)?;
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                tray::close_requested(window, api);
+            }
         })
         .invoke_handler(tauri::generate_handler![
             hardware,
@@ -964,6 +1061,7 @@ pub fn run() {
             delete_result,
             select_model,
             transcribe,
+            resume,
             cancel,
             export,
             fetch_model,

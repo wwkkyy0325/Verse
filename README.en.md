@@ -161,6 +161,14 @@ and Linux — where the build **did** succeed, the one failure being a test that
 writes a Windows path rather than anything in the program — was dropped as a
 scope decision. A second bundle layout is a second thing to keep working.
 
+**Closing the window does not end the program.** The first time you press ✕ it
+asks what you want — hide to the tray, or quit — and remembers the answer. That
+is not decoration: a long recording takes minutes, and before there was a tray
+closing the window **killed it silently**. Quitting with work outstanding asks
+first, and whatever was interrupted is waiting in the list next time; press
+continue and it picks up where it stopped, because the recognition already done
+is kept rather than thrown away.
+
 The build downloads a prebuilt sherpa-onnx archive; behind a slow link, see
 `docs/llmwiki/design.md` §7.2 for staging it by hand.
 
