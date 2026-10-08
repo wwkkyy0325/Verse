@@ -120,9 +120,7 @@ still the reason the choice was worth measuring.
 
 ---
 
-## Required at runtime, not bundled
-
-### FFmpeg — invoked as a subprocess
+### FFmpeg — invoked as a subprocess, and shipped with the program
 
 **License depends on the build.** Most Windows builds in circulation — including
 the `gyan.dev` "essentials" build used during development — are **GPL**
@@ -133,13 +131,29 @@ link against its libraries. That is the arrangement most commonly held to keep
 the caller independent of FFmpeg's license. It is also the reason no FFmpeg
 code is compiled into Verse.
 
-**Decided: an LGPL build is bundled (option 2).** The alternative was to
-require the user to install ffmpeg, which breaks the "install and run" goal the
-whole project is built around.
+**Decided: an LGPL build is bundled.** The alternative was to require the user
+to install ffmpeg, which breaks the "install and run" goal the whole project is
+built around.
 
 The source is **BtbN/FFmpeg-Builds**, whose release listing publishes `-lgpl`
 archives separately from its GPL ones — checked rather than assumed. The static
 Windows build is the one fetched, so the bundle carries a single file.
+
+**It is LGPL version 3, and that was verified by running the binary** rather
+than by trusting the filename — a filename saying `lgpl` is a claim, not a
+licence. The build's own configuration line carries `--enable-version3` and does
+**not** carry `--enable-gpl` or `--enable-nonfree`, which is what makes it LGPLv3
+rather than LGPLv2.1 or GPL. Verify the same way after any change to the pin:
+
+```console
+$ ffmpeg -version | tr ' ' '\n' | grep -E '^--enable-(gpl|nonfree|version3|lgpl)'
+--enable-version3
+```
+
+**Because it is LGPLv3, the GPLv3 text ships too.** LGPLv3 §3 applies GPLv3's
+terms to the combined work, so the lesser licence on its own is half of what has
+to be passed on. Both are in `licences/`, and both are listed under
+`bundle.resources`.
 
 **That project publishes nothing for macOS**, and the well-known macOS ffmpeg
 builds elsewhere are GPL. Rather than accept a GPL binary on one platform or
@@ -147,17 +161,19 @@ build ffmpeg from source there, **macOS is not supported**. Linux is not
 supported either, but for an unrelated reason that is not about licences at all;
 both are written out in the release workflow.
 
-The licence text ships with the product, and the source offer it needs is:
+The source offer the licence requires is:
 
-- ffmpeg itself — <https://ffmpeg.org/releases/> (the version is pinned in the
-  release workflow as `FFMPEG_ASSET`, and it names one of BtbN's per-release
-  branches, `n8.1`, rather than the rolling `master` build: it is the latest
-  8.1.x and it moves when 8.1 gets a patch, which is the point — a licence
-  notice can name a release line, and cannot name "latest")
+- ffmpeg itself — <https://ffmpeg.org/releases/>. Which build is fetched is
+  pinned in `tools/fetch-ffmpeg.sh` as `FFMPEG_ASSET`, and it names one of
+  BtbN's per-release branches, `n8.1`, rather than the rolling `master` build. A
+  licence notice can name a release line; it cannot name "latest". The line is
+  not a frozen artifact — `n8.1-latest` is rebuilt when 8.1 gets a patch, which
+  is the point of pinning to a branch rather than to a date. The build fetched
+  on 2026-10-08 reported itself as `n8.1.3-14-g330caae0c1-20261007`.
 - how that binary was built — <https://github.com/BtbN/FFmpeg-Builds>
 
-The bundled file is a **sidecar**: `tauri.conf.json` declares it under
-`externalBin`, and `tauri-bundler` installs it beside the program with the
+The bundled file is a **sidecar**: the release workflow declares it under
+`bundle.externalBin`, and `tauri-bundler` installs it beside the program with the
 target-triple suffix stripped. `verse-audio` looks for it there before `PATH`,
 so an installed copy uses the ffmpeg it shipped with rather than whatever the
 machine happens to have.
@@ -197,4 +213,10 @@ These are used to build and test, and are not distributed with the product:
       `/master/`. Needs a revision per mirror — HuggingFace accepts a commit
       SHA in `resolve/<sha>/`, ModelScope's revision semantics are its own —
       and a downloader that can express one.
-- [ ] FFmpeg distribution strategy decided and its license honoured
+- [x] FFmpeg distribution strategy decided and its license honoured — an LGPLv3
+      build is bundled; see the section above. Checked by running the fetched
+      binary, not by the archive's filename.
+- [x] LGPLv3 **and** GPLv3 texts ship — `licences/LGPL-3.0.txt`,
+      `licences/GPL-3.0.txt`, both under `bundle.resources`. Both, because
+      LGPLv3 §3 pulls GPLv3's terms in. This was missing until 2026-10-08: the
+      bundle carried an LGPL binary and neither text.

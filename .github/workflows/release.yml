@@ -46,17 +46,6 @@ on:
 permissions:
   contents: write
 
-env:
-  # The exact archive, not a pattern. BtbN rebuilds its `master` asset daily,
-  # and "latest" is not a version for a licence notice to name — see
-  # THIRD_PARTY_NOTICES.md.
-  #
-  # `n8.1` is one of BtbN's per-FFmpeg-release branches. A release branch is
-  # the right kind of pin for something that parses untrusted media: it is a
-  # nameable version, and it still takes patch releases. 8.1 is the line
-  # closest to the 8.0.1 this project is developed against.
-  FFMPEG_ASSET: ffmpeg-n8.1-latest-win64-lgpl-8.1.zip
-
 jobs:
   bundle:
     name: windows
@@ -65,24 +54,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The sidecar name carries the target triple, because the bundler strips
-      # exactly that suffix on the way in: it copies
-      # `ffmpeg-x86_64-pc-windows-msvc.exe` to `ffmpeg.exe` beside the program,
-      # which is where `verse-audio` looks for it. Read out of `tauri-bundler`'s
-      # `Settings::copy_binaries` rather than guessed — naming it `ffmpeg.exe`
-      # here would install a file the config cannot resolve.
+      # A script rather than a `run:` block, and that is the whole point. The
+      # first release run this project ever did failed here — `find ... -exec
+      # cp {} dest +` is rejected by GNU find as shipped in Git Bash — and the
+      # fault reproduces in seconds on a developer's machine. It only cost a CI
+      # run because a step spelled out in YAML can be debugged one run at a
+      # time. `tools/fetch-ffmpeg.sh` carries the reasoning and the pin.
+      #
+      # Run it here before changing it: `bash tools/fetch-ffmpeg.sh`.
+      #
+      # `bash <script>` rather than `./<script>`, because the executable bit is
+      # a POSIX file mode and this repository is developed on Windows, where git
+      # will not set one. The script is invoked, not relied on being marked.
       - name: ffmpeg — the LGPL build
         shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p ffmpeg-bin
-          curl -fsSL \
-            "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/${FFMPEG_ASSET}" \
-            -o ffmpeg.zip
-          unzip -q ffmpeg.zip -d ffmpeg-unpacked
-          find ffmpeg-unpacked -name ffmpeg.exe \
-            -exec cp {} ffmpeg-bin/ffmpeg-x86_64-pc-windows-msvc.exe +
-          ls -la ffmpeg-bin/
+        run: bash tools/fetch-ffmpeg.sh
 
       # Declared here and not in `tauri.conf.json`, and the difference is not
       # stylistic: `tauri-build` validates `externalBin` from the *build

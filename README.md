@@ -230,11 +230,14 @@ $ verse transcribe recordings/ -o out/ --json 2>/dev/null | jq -r '.results[].te
 ## 开发
 
 ```
-cargo test --workspace
-cargo clippy --workspace --all-targets
+bash tools/ci.sh
 ```
 
-386 个测试，clippy 干净。`docs/llmwiki/` 里是设计、任务日志和变更记录，从
+CI 跑的就是这三样——测试、clippy、前端类型检查——`tools/ci.sh` 把它们合成一条
+命令。**推之前先跑一遍**：这个仓库第一次发 release 时，出错的那一步在本地两秒钟
+就能复现，代价却是一整个 CI run。
+
+388 个测试，clippy 干净。`docs/llmwiki/` 里是设计、任务日志和变更记录，从
 `design.md` 开始。`AGENTS.md` 写了这个仓库的约定。
 
 ## 许可证

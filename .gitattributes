@@ -1,0 +1,21 @@
+# Line endings belong to the file, not to the machine that cloned it.
+#
+# There was no `.gitattributes` here until 2026-10-08, and `core.autocrlf=true`
+# is set on the machine this repository is developed on. A clean checkout
+# therefore wrote `tools/*.sh` with CRLF — verified by cloning the repository and
+# reading the bytes, not reasoned about.
+#
+# That matters because bash does not tolerate it: with CRLF, every line of a
+# script carries a trailing CR, so the first command bash reads is the whole line
+# plus a stray carriage return. The failure has nothing to do with the script.
+#
+# `actions/checkout` does not touch `core.autocrlf` — checked by searching its
+# source, where the string does not appear — so what a runner receives is
+# whatever that machine's git is configured to do. This file is the only thing
+# that makes a checkout deterministic.
+#
+# Only shell scripts are listed. Everything else survives either ending: YAML
+# workflows are parsed server-side from the committed blob, Rust and JSON do not
+# care, and Python and Node read their sources through parsers that do not
+# either. The rule is here for the files where it is load-bearing.
+*.sh text eol=lf

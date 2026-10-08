@@ -44,7 +44,9 @@
       "../../THIRD_PARTY_NOTICES.md": "licences/THIRD_PARTY_NOTICES.md",
       "../../licences/FunASR-Model-License-1.1.txt": "licences/FunASR-Model-License-1.1.txt",
       "../../licences/Silero-VAD-MIT.txt": "licences/Silero-VAD-MIT.txt",
-      "../../licences/sherpa-onnx-Apache-2.0.txt": "licences/sherpa-onnx-Apache-2.0.txt"
+      "../../licences/sherpa-onnx-Apache-2.0.txt": "licences/sherpa-onnx-Apache-2.0.txt",
+      "../../licences/LGPL-3.0.txt": "licences/LGPL-3.0.txt",
+      "../../licences/GPL-3.0.txt": "licences/GPL-3.0.txt"
     }
   }
 }

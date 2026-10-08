@@ -2403,3 +2403,72 @@ and that is the whole of what is known. **Nothing is code-signed**, so Windows
 shows a SmartScreen warning.
 
 388 tests, clippy clean, `svelte-check` 0 errors.
+
+---
+
+## 2026-10-08 — The release ran, and four things came out of it
+
+### The first release run failed at step 3
+
+```
+find: missing argument to `-exec'
+```
+
+`find ... -exec cp {} dest +` — GNU find as shipped in Git Bash rejects the `+`
+form whenever anything follows `{}`. That is the POSIX rule for `;`, which GNU
+normally relaxes and does not relax here. Three commands in the same shell:
+
+| command | result |
+|---|---|
+| `find . -maxdepth 0 -exec echo PREFIX {} +` | ok |
+| `find . -maxdepth 0 -exec echo {} SUFFIX +` | `missing argument to '-exec'` |
+| `find ... -exec cp {} destfile +` | `missing argument to '-exec'` |
+
+Quoting the plus does not help. Passing it through a variable does not help.
+`MSYS2_ARG_CONV_EXCL='*'` does not help — the argument is not mangled on the way
+in, it is rejected. `-exec ... \;` is unaffected.
+
+**The expensive part was never the bug.** It was that the step lived in a YAML
+`run:` block, where the only way to try a fix is a push. On this machine the
+whole diagnosis took six shell commands.
+
+### So the steps became scripts
+
+`tools/ci.sh` mirrors the CI job and can be run here. `tools/fetch-ffmpeg.sh` is
+the release step that failed, as a file — run it, and the whole fetch, unpack
+and placement is exercised in one command. It also refuses to exit 0 on a `find`
+that matched nothing, which is the failure that would otherwise surface much
+later inside the bundler as something unrelated.
+
+Invoked as `bash tools/fetch-ffmpeg.sh`, not `./`, because the executable bit is
+a POSIX file mode and this repository is developed on Windows where git will not
+set one.
+
+### The bundled ffmpeg's licence had been asserted, never checked
+
+Three documents said "an LGPL build" and none had looked at one. Running the
+fetched binary:
+
+```console
+$ ffmpeg -version | tr ' ' '\n' | grep -E '^--enable-(gpl|nonfree|version3|lgpl)'
+--enable-version3
+```
+
+`--enable-version3` present, `--enable-gpl` absent. It is **LGPLv3** — a version
+the prose had never named, and the version that matters, because LGPLv3 §3 pulls
+GPLv3's terms into the distribution.
+
+**Which exposed a gap: the bundle carried an LGPLv3 binary and neither licence
+text.** Both are now in `licences/`, taken from FFmpeg's own `COPYING.LGPLv3`
+and `COPYING.GPLv3`, and both are listed under `bundle.resources`. The reported
+build, `n8.1.3-14-g330caae0c1-20261007`, is in `THIRD_PARTY_NOTICES.md` so the
+notice names what actually shipped rather than a filename.
+
+### Where the release stands
+
+Step 3 is now a script that has been run here and exits 0. Everything after it —
+the `--config` merge, `tauri-action`, the installers, the draft release itself —
+has still never executed. The tag `v0.1.0` exists, the run failed, and no release
+was created.
+
+388 tests, clippy clean, `svelte-check` 0 errors.

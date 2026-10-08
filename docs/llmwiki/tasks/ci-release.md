@@ -121,15 +121,95 @@ and never seen on a machine. Its own doc comment said so. macOS's
 release later. `bundled()` is gone with it — with one candidate left it was a
 one-line wrapper around `beside()`, so `locate()` calls `beside()` directly.
 
+## 7. [x] The release path ran for the first time, and died at step 3
+
+- [x] Diagnosed and fixed. **Verify:** `bash tools/fetch-ffmpeg.sh` on this
+      machine — the whole step, not the construct.
+
+Tag `v0.1.0` was pushed, and `release.yml` failed in about ninety seconds with
+
+```
+find: missing argument to `-exec'
+```
+
+The step was:
+
+```bash
+find ffmpeg-unpacked -name ffmpeg.exe -exec cp {} ffmpeg-bin/ffmpeg-x86_64-pc-windows-msvc.exe +
+```
+
+**GNU find as shipped in Git Bash rejects the `+` form whenever anything follows
+`{}`.** Measured, not reasoned — three commands in the same shell:
+
+| command | result |
+|---|---|
+| `find . -maxdepth 0 -exec echo PREFIX {} +` | **ok** |
+| `find . -maxdepth 0 -exec echo {} SUFFIX +` | `missing argument to '-exec'` |
+| `find unpacked -name ffmpeg.exe -exec cp {} destfile +` | `missing argument to '-exec'` |
+
+That is the POSIX rule for `;`, which GNU normally relaxes; it does not relax it
+for `+`. Quoting the plus does not help, passing it through a variable does not
+help, and `MSYS2_ARG_CONV_EXCL='*'` does not help — none of which is surprising
+in hindsight, because the argument is not being mangled on the way in. It is
+being rejected. `-exec ... \;` is unaffected and is what the script uses now.
+
+**The finding is not the fix, it is how long the fix took.** The whole diagnosis
+was six shell commands and about two seconds. It cost a CI run because the step
+existed only inside a YAML `run:` block, where the only way to try it is a push.
+
+## 8. [x] Run it here first
+
+- [x] `tools/ci.sh` — the CI job, runnable locally. **Verify:** run it; green.
+- [x] `tools/fetch-ffmpeg.sh` — the release step that failed, as a script.
+      **Verify:** run it; it fetched 170 MB, unpacked, placed a 134 MB
+      `ffmpeg-x86_64-pc-windows-msvc.exe`, and exited 0.
+
+The maintainer asked for this in as many words after the second failed run:
+run it here before spending a runner. `tools/ci.sh` mirrors the three checks in
+`ci.yml` and says, in its own output, that a local run without ffmpeg is weaker
+than CI's. The release step is a script for the same reason the diagnosis was
+hard: a step that can only be exercised on a runner costs a round trip per
+attempt.
+
+## 9. [x] The bundled ffmpeg's licence was asserted, never checked
+
+- [x] Checked by running the binary. **Verify:** the command below.
+- [x] Two licence texts added and shipped. **Verify:** `bundle.resources` in
+      `tauri.conf.json`, and `licences/LGPL-3.0.txt`, `licences/GPL-3.0.txt`.
+
+Three documents said "an LGPL build" and none of them had looked at one. Run
+against the fetched binary:
+
+```console
+$ ffmpeg -version | tr ' ' '\n' | grep -E '^--enable-(gpl|nonfree|version3|lgpl)'
+--enable-version3
+```
+
+`--enable-version3` present, `--enable-gpl` and `--enable-nonfree` absent. So it
+is **LGPL, and specifically LGPLv3** — a distinction the prose had not drawn,
+and one that matters, because LGPLv3 §3 pulls in GPLv3's terms.
+
+**Which meant the bundle was missing a licence text.** It carried an LGPLv3
+binary and neither the LGPLv3 nor the GPLv3 text; `bundle.resources` listed
+FunASR, Silero and sherpa-onnx, and nothing for ffmpeg. Both texts are now in
+`licences/`, taken from `FFmpeg/FFmpeg`'s own `COPYING.LGPLv3` and
+`COPYING.GPLv3` — upstream's copy rather than gnu.org's, which was also
+unreachable through the proxy that day.
+
+The reported build was `n8.1.3-14-g330caae0c1-20261007`, recorded in
+`THIRD_PARTY_NOTICES.md` so the notice names what actually shipped.
+
 ## What is not verified from here
 
-**Nothing in either workflow has run.** The YAML parses and has no control
-characters, both of which were checked after a form feed once got into
-`release.yml` through backslash mangling. Everything else is a claim about a
-runner this machine is not.
+**`release.yml` has now run once and failed.** Everything after step 3 is still
+untested: the `--config` merge, `tauri-action`, the Windows installer build, and
+whether a release is created at all. The step that failed is the step that is
+now a script and has been run — the rest has not.
 
-Specifically unverified: the BtbN fetch and its asset name, the `--config`
-merge, the Windows installer build, and whether a release is created at all.
+The `tagName` fix is still a source-derived claim about a runner rather than an
+observation of one — so is the sidecar name, which comes from reading
+`tauri-bundler`'s `Settings::copy_binaries` and has never been seen installed
+anywhere.
 
 ## Follow-ups, recorded rather than done
 

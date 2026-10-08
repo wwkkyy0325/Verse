@@ -74,10 +74,14 @@ being broken and then fixed.
 ## Practical
 
 ```
-cargo test --workspace
-cargo clippy --workspace --all-targets
+bash tools/ci.sh
 ```
 
-Both must be clean before a change is finished. Model weights and test audio
-are gitignored and are not in the repository; see `design.md` §6 for how they
-are fetched.
+That runs what CI runs — tests, clippy, frontend types — and all of it must be
+clean before a change is finished. Run it before pushing rather than after: a
+release step once failed on a shell construct that reproduces locally in two
+seconds, and it cost a CI run to find out. Release steps that can fail are
+scripts under `tools/`, so they can be run here too.
+
+Model weights and test audio are gitignored and are not in the repository; see
+`design.md` §6 for how they are fetched.

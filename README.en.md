@@ -265,11 +265,14 @@ Written here so they do not creep in:
 ## Development
 
 ```
-cargo test --workspace
-cargo clippy --workspace --all-targets
+bash tools/ci.sh
 ```
 
-386 tests, clippy clean. `docs/llmwiki/` holds the design, the task logs and the
+That is the three things CI checks — tests, clippy, frontend types — in one
+command. **Run it before pushing**: when this repository built its first release,
+the step that broke reproduced locally in two seconds and cost a CI run anyway.
+
+388 tests, clippy clean. `docs/llmwiki/` holds the design, the task logs and the
 changelog; start at `design.md`. `AGENTS.md` describes the conventions if you are
 an agent working in this repository.
 
