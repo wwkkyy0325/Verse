@@ -67,6 +67,22 @@ pub enum Screen {
     Failed(Failed),
 }
 
+impl Screen {
+    /// A file that cannot run until a model is fetched.
+    ///
+    /// A constructor rather than two struct literals that agree today. The
+    /// download always starts at [`DownloadState::Idle`] — what is left to say
+    /// at each call site is *when* a file goes here, which is the part that
+    /// differs.
+    fn needing_model(input: PathBuf, model: String) -> Self {
+        Self::NeedsModel {
+            input,
+            model,
+            download: DownloadState::Idle,
+        }
+    }
+}
+
 /// A job in flight.
 #[derive(Debug, PartialEq)]
 pub struct Working {
@@ -372,7 +388,18 @@ impl AppState {
         // once calls this five times within a millisecond, long before any
         // `JobStarted` has arrived — checking `job` would let the second call
         // start a job and cancel the first.
-        if self.running.is_some() {
+        //
+        // The model half of this guard was missing, and it was a dead end
+        // rather than a slow path. A file waiting for a model sets neither
+        // `job` nor `running`, so a second drop found the slot free and took
+        // it — and then took everything that comes with the slot:
+        // `download_changed` writes to the *selected* screen, so the first
+        // file's progress froze where it stood, and `model_ready` starts the
+        // selected file, so the download started the second one and left the
+        // first waiting for a model that was by then on disk. Pressing 下载模型
+        // on the stranded row answered "已经在本机了", and the only way out was
+        // to remove the row and drop the file again.
+        if self.running.is_some() || self.awaiting_model() {
             self.enqueue(input);
             return Effect::None;
         }
@@ -380,11 +407,7 @@ impl AppState {
         let screen = if model_ready {
             Screen::Working(Working::new(input.clone()))
         } else {
-            Screen::NeedsModel {
-                input: input.clone(),
-                model: self.model.clone(),
-                download: DownloadState::Idle,
-            }
+            Screen::needing_model(input.clone(), self.model.clone())
         };
 
         // Appended and shown, so the one-click path behaves exactly as it did
@@ -409,7 +432,33 @@ impl AppState {
         }
     }
 
-    /// The user asked to fetch the missing model.
+    /// Whether some file is already waiting for a model.
+    ///
+    /// One slot, one waiter. A file on [`Screen::NeedsModel`] is holding the
+    /// job slot a step early: it starts the moment the model arrives, it is the
+    /// screen `download_changed` reports to, and it is the one `model_ready`
+    /// finds. A second file there would strand the first with nothing left to
+    /// move it — which is what [`AppState::file_chosen`] now prevents.
+    ///
+    /// Asked by the three guards that all mean "the slot is taken" — a drop,
+    /// [`AppState::start_next`], and the count in [`AppState::pending`] — and
+    /// by the `resume` command, which is the one caller that has something to
+    /// say about it rather than something to do.
+    pub fn awaiting_model(&self) -> bool {
+        self.model_waiter().is_some()
+    }
+
+    /// The file waiting for a model, when there is one.
+    ///
+    /// One, at most, and by construction rather than by a counter that could
+    /// drift: a file only reaches this screen when nothing else holds the slot,
+    /// and it gives the screen up only by starting.
+    fn model_waiter(&self) -> Option<&FileEntry> {
+        self.files
+            .iter()
+            .find(|entry| matches!(entry.screen, Screen::NeedsModel { .. }))
+    }
+
     /// Whether the file being shown is waiting for this exact model.
     ///
     /// Asked after a download finishes, so that fetching a model from the panel
@@ -583,7 +632,12 @@ impl AppState {
     /// assumes. Taking the slot out from under a running job would be two jobs
     /// on one slot, which stops the first.
     pub fn start_next(&mut self) -> Option<PathBuf> {
-        if self.running.is_some() {
+        // `take_next` walks the queue past whatever is in front of it, and what
+        // is in front of a queue can be a file waiting for a model rather than
+        // a running job. 继续 would then have skipped over the one file that
+        // holds the slot and started a transcription that could only fail for
+        // want of the model — which is what it did.
+        if self.running.is_some() || self.awaiting_model() {
             return None;
         }
         self.take_next()
@@ -596,8 +650,17 @@ impl AppState {
     /// is accepted, and `job` stays empty until the pipeline says `JobStarted`.
     /// Asking `is_running` here would call the window idle during exactly the
     /// window a quit is most likely to land in.
+    ///
+    /// **A file waiting for a model counts, and it did not.** It is not running
+    /// and it is not queued, so it was invisible to the count and to
+    /// [`Self::unfinished`] — and a row that is not in `pending.json` is a row
+    /// that is gone from the list on the next launch. Nothing was lost by
+    /// quitting, because nothing had started; what was lost was the file
+    /// itself, which is the one record that somebody handed it over.
     pub fn pending(&self) -> usize {
-        usize::from(self.running.is_some()) + self.queue.len()
+        usize::from(self.running.is_some())
+            + usize::from(self.model_waiter().is_some())
+            + self.queue.len()
     }
 
     /// Those same files, in the order they would have run.
@@ -606,10 +669,20 @@ impl AppState {
     /// it is written to disk on the way out and read back by a different
     /// process, where the positions mean nothing.
     pub fn unfinished(&self) -> Vec<PathBuf> {
-        self.running
+        let running = self
+            .running
             .and_then(|index| self.files.get(index))
-            .map(|entry| entry.input.clone())
+            .map(|entry| entry.input.clone());
+
+        // Second, because it is next: it holds the slot the queue is behind.
+        // The two cannot both be set — a drop while something runs queues
+        // rather than waits for a model — but the order is written down anyway
+        // rather than left to that coincidence.
+        let waiting = self.model_waiter().map(|entry| entry.input.clone());
+
+        running
             .into_iter()
+            .chain(waiting)
             .chain(
                 self.queue
                     .iter()
@@ -629,11 +702,38 @@ impl AppState {
     ///
     /// The caller has already dropped paths that are no longer on disk, for the
     /// reason [`Restored`] gives: deciding that is I/O, and this module does
-    /// none.
-    pub fn restore_pending(&mut self, files: Vec<PathBuf>) {
+    /// none. `model_ready` is I/O for the same reason and is answered by the
+    /// caller the same way.
+    ///
+    /// **`model_ready` decides the shape, and only the first file's.** A model
+    /// that is not here puts the first file on [`Screen::NeedsModel`] — the
+    /// screen with the download on it, which is where a drop would have left it
+    /// — and the rest behind it. Restoring them all as waiting rows would have
+    /// been wrong twice: the rows would claim a job slot that nothing was ever
+    /// going to move, and 继续 would have started a transcription that could
+    /// only fail for want of the model.
+    pub fn restore_pending(&mut self, files: Vec<PathBuf>, model_ready: bool) {
         for input in files {
-            // Ignored when it is already in the list, which is what `enqueue`
-            // answers and what a duplicate in the record would cause.
+            // Already in the list. `enqueue` answers that with `false`, and a
+            // duplicate in the record is what would cause it.
+            if self.files.iter().any(|entry| entry.input == input) {
+                continue;
+            }
+
+            if !model_ready && self.model_waiter().is_none() {
+                // Not `selected`: opening the window shows the drop target, and
+                // this is a row in the list beside it, not a screen somebody
+                // asked for. Not `running` either — that is the whole of
+                // "waiting, not started".
+                let entry = FileEntry {
+                    engine: self.model.clone(),
+                    screen: Screen::needing_model(input.clone(), self.model.clone()),
+                    input,
+                };
+                self.files.push(entry);
+                continue;
+            }
+
             let _ = self.enqueue(input);
         }
     }
@@ -1087,6 +1187,93 @@ mod tests {
         });
 
         assert_eq!(*state.screen(), Screen::Empty);
+    }
+
+    fn fetching(received: u64) -> DownloadState {
+        DownloadState::Fetching {
+            mirror: "hf-mirror".to_string(),
+            file: "model.int8.onnx".to_string(),
+            received,
+            total: Some(239_233_841),
+        }
+    }
+
+    #[test]
+    fn a_second_file_dropped_while_the_model_is_missing_waits_its_turn() {
+        // Dropping a folder onto a window that has no model yet. The first file
+        // takes the wait for the model; the rest queue behind it.
+        //
+        // Before the guard, the second file took the *screen* — and with it
+        // everything that follows the screen: the download's progress and the
+        // job that starts when the model arrives. The first file was left
+        // waiting for a model that was on disk by then, with no way forward but
+        // removing the row and dropping the file again.
+        let mut state = AppState::new();
+
+        state.file_chosen(input("a.wav"), false);
+        state.file_chosen(input("b.wav"), false);
+
+        assert!(matches!(state.files()[0].screen, Screen::NeedsModel { .. }));
+        assert!(
+            matches!(state.files()[1].screen, Screen::Queued { .. }),
+            "the second file took the wait that belongs to the first"
+        );
+        assert_eq!(
+            state.selected(),
+            Some(0),
+            "and the pane, which is where the download reports"
+        );
+    }
+
+    #[test]
+    fn the_download_still_reaches_the_file_that_is_waiting_for_it() {
+        // The other half of the same bug, and the one that was visible: the bar
+        // froze at whatever it said when the second file arrived, because
+        // `download_changed` writes to the *selected* screen and the second
+        // drop had moved the selection.
+        let mut state = AppState::new();
+        state.file_chosen(input("a.wav"), false);
+        state.file_chosen(input("b.wav"), false);
+
+        state.download_changed(fetching(1024));
+
+        let Screen::NeedsModel { download, .. } = &state.files()[0].screen else {
+            panic!(
+                "the first file is no longer in the model wait: {:?}",
+                state.files()[0].screen
+            );
+        };
+        assert!(
+            matches!(download, DownloadState::Fetching { received: 1024, .. }),
+            "the download never reached the file waiting for it: {download:?}"
+        );
+    }
+
+    #[test]
+    fn every_file_that_waited_for_the_model_runs_once_it_arrives() {
+        // Which is what makes queueing them right rather than merely tidy: the
+        // model arrives, the waiting file starts, and the rest follow through
+        // the ordinary queue when it finishes.
+        let mut state = AppState::new();
+        state.file_chosen(input("a.wav"), false);
+        state.file_chosen(input("b.wav"), false);
+
+        assert_eq!(
+            state.model_ready(),
+            Effect::Transcribe(input("a.wav")),
+            "the model started the wrong file"
+        );
+
+        state.apply(&Event::JobStarted {
+            id: JobId(1),
+            kind: verse_core::JobKind::FileTranscribe,
+        });
+        state.apply(&Event::TranscriptFinal {
+            job: JobId(1),
+            transcript: Transcript::default(),
+        });
+
+        assert_eq!(state.take_next(), Some(input("b.wav")));
     }
 
     #[test]
@@ -1562,12 +1749,70 @@ mod tests {
         // Waiting, not running: a window that began recognising files the
         // moment it opened would be doing work nobody asked for.
         let mut state = AppState::new();
-        state.restore_pending(vec![input("a.wav"), input("b.wav")]);
+        state.restore_pending(vec![input("a.wav"), input("b.wav")], true);
 
         assert_eq!(state.pending(), 2);
         assert!(!state.is_running());
         assert!(matches!(state.files()[0].screen, Screen::Queued { .. }));
         assert_eq!(state.selected(), None, "nothing is pulled onto the screen");
+    }
+
+    #[test]
+    fn an_interrupted_file_whose_model_is_missing_comes_back_asking_for_it() {
+        // The row comes back in the state it was in, which is the claim
+        // `restore_pending` makes. As waiting rows they would have claimed a
+        // slot nothing was going to move, and 继续 would have started a
+        // transcription that could only fail for want of the model.
+        let mut state = AppState::new();
+        state.restore_pending(vec![input("a.wav"), input("b.wav")], false);
+
+        assert!(
+            matches!(state.files()[0].screen, Screen::NeedsModel { .. }),
+            "the first file has to be the one offering the download: {:?}",
+            state.files()[0].screen
+        );
+        assert!(matches!(state.files()[1].screen, Screen::Queued { .. }));
+        assert_eq!(state.pending(), 2, "both files are still somebody's work");
+
+        // And still nothing starts, including the one holding the slot.
+        assert!(!state.is_running());
+        assert_eq!(state.selected(), None);
+    }
+
+    #[test]
+    fn continuing_a_queue_whose_model_is_missing_starts_nothing() {
+        // 继续 is the one way to start a queue with nothing in front of it, and
+        // `take_next` walks past whatever is in front. What is in front here is
+        // not a running job but a file waiting for a model, so 继续 skipped it
+        // and started a transcription that could only fail for want of the
+        // model — while the row that could have fetched it sat in the list.
+        let mut state = AppState::new();
+        state.restore_pending(vec![input("a.wav"), input("b.wav")], false);
+
+        assert_eq!(state.start_next(), None);
+        assert!(
+            matches!(state.files()[1].screen, Screen::Queued { .. }),
+            "it started the second file past the one holding the slot"
+        );
+        assert!(!state.is_running());
+    }
+
+    #[test]
+    fn a_file_waiting_for_a_model_is_unfinished_like_any_other() {
+        // It has not started, so nothing of it is lost — but the row is the
+        // only record that somebody handed this file over, and leaving it out
+        // of `unfinished` meant it was left out of `pending.json` too. Quitting
+        // did not lose work; it lost the file.
+        let mut state = AppState::new();
+        state.file_chosen(input("a.wav"), false);
+        state.file_chosen(input("b.wav"), false);
+
+        assert_eq!(state.pending(), 2);
+        assert_eq!(
+            state.unfinished(),
+            vec![input("a.wav"), input("b.wav")],
+            "the file holding the slot comes first, then the queue behind it"
+        );
     }
 
     #[test]

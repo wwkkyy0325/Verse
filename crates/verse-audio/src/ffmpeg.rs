@@ -5,7 +5,7 @@
 //! is the entire reason for the sidecar design (see `design.md` §6.5 and the
 //! no-leak constraint in §3).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use verse_core::{Error, ErrorKind, Result};
 
@@ -13,12 +13,47 @@ use verse_core::{Error, ErrorKind, Result};
 /// `PATH` or when a specific build is needed.
 pub const FFMPEG_ENV: &str = "VERSE_FFMPEG";
 
+/// Windows' `CREATE_NO_WINDOW`.
+///
+/// Not in `std::os::windows::process` as a constant, so the number is written
+/// here with its name beside it.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 fn program_name() -> &'static str {
     if cfg!(windows) {
         "ffmpeg.exe"
     } else {
         "ffmpeg"
     }
+}
+
+/// A command that runs `ffmpeg`, and nothing else.
+///
+/// **Every spawn goes through here, and on Windows that is load-bearing.**
+/// ffmpeg is a console program and Verse is not — `main.rs` is
+/// `windows_subsystem = "windows"` in a release build — so Windows gives each
+/// child a console of its own, and draws it: a black rectangle flashing open
+/// and shut, once per spawn, plus one that stays up for as long as a file takes
+/// to decode. That was the first thing anyone who *installed* this reported,
+/// and it is invisible from the command line, which has a console already.
+///
+/// `CREATE_NO_WINDOW` suppresses the console without detaching the process, so
+/// stdout, stderr and the exit status are all unaffected — which is why this is
+/// a flag on the command rather than a different spawning call.
+pub fn command(ffmpeg: &Path) -> Command {
+    let command = Command::new(ffmpeg);
+
+    #[cfg(windows)]
+    let command = {
+        use std::os::windows::process::CommandExt as _;
+
+        let mut command = command;
+        command.creation_flags(CREATE_NO_WINDOW);
+        command
+    };
+
+    command
 }
 
 /// Locate the ffmpeg executable.
@@ -53,7 +88,7 @@ pub fn locate() -> Result<PathBuf> {
     }
 
     let name = program_name();
-    if Command::new(name)
+    if command(Path::new(name))
         .arg("-version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -109,7 +144,7 @@ pub fn is_available() -> bool {
 /// caller's business rather than something to guess at here.
 pub fn version() -> Option<String> {
     let ffmpeg = locate().ok()?;
-    let output = Command::new(ffmpeg).arg("-version").output().ok()?;
+    let output = command(&ffmpeg).arg("-version").output().ok()?;
     let text = String::from_utf8_lossy(&output.stdout);
 
     text.lines()
@@ -150,5 +185,32 @@ mod tests {
         // `current_exe` can fail, and a path with no parent exists.
         assert_eq!(beside(None), None);
         assert_eq!(beside(Some(std::path::Path::new(""))), None);
+    }
+
+    #[test]
+    fn the_flags_that_hide_the_console_do_not_detach_the_process() {
+        // Whether a black window is drawn is not observable from a test — it
+        // is drawn, or not, on somebody's screen. What is observable is the
+        // thing that made `CREATE_NO_WINDOW` the right answer rather than
+        // `DETACHED_PROCESS`: the child still starts, still writes to the pipe
+        // this end reads, and still exits zero. Detaching would have hidden the
+        // window too, and would have broken all three.
+        let Ok(ffmpeg) = locate() else {
+            // No ffmpeg on this machine. `tests/ffmpeg_sidecar.rs` skips for
+            // the same reason.
+            return;
+        };
+
+        let output = command(&ffmpeg)
+            .arg("-version")
+            .output()
+            .expect("spawning ffmpeg through the helper");
+
+        assert!(output.status.success(), "ffmpeg -version did not succeed");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).starts_with("ffmpeg version"),
+            "stdout did not survive the flags: {:?}",
+            String::from_utf8_lossy(&output.stdout)
+        );
     }
 }

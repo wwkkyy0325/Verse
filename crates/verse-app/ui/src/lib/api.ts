@@ -66,6 +66,14 @@ export type Screen =
       /** `null` when the file's length is not known, which is not zero. */
       fraction: number | null;
     }
+  /**
+   * A finished transcript.
+   *
+   * `exported` is the **whole path**, unlike every other screen's `file`, which
+   * is a name. The window shows its last segment in the bar and the whole thing
+   * in that line's tooltip; the folder is not something the bar has room for,
+   * and it is the one part of the sentence somebody looking for the file needs.
+   */
   | { kind: "done"; file: string; exported: string | null; saveError: string | null }
   | { kind: "failed"; file: string; reason: string; recovery: Recovery };
 

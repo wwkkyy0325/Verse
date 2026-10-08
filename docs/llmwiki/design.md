@@ -234,6 +234,8 @@ That obligation is real rather than a footnote: requiring a separate ffmpeg inst
 
 **Resampling happens in ffmpeg.** Decoding asks for 16 kHz mono directly (`-ar 16000 -ac 1`) so ffmpeg's proper resampler does the work. sherpa-onnx also ships a `LinearResampler`, but linear interpolation is a poor fit for 44.1 kHz → 16 kHz; letting ffmpeg handle it is both simpler and better.
 
+**Every spawn is `CREATE_NO_WINDOW`, and on Windows that is a requirement rather than a preference.** The window is a GUI program (`windows_subsystem = "windows"` in `main.rs`) and ffmpeg is a console program, so each child is given a console of its own and Windows draws it: a black rectangle once per spawn, plus one held for as long as a file takes to decode. That was the first thing anyone who *installed* this reported, and it is invisible from the command line, which already has a console. `ffmpeg::command` is the only way a spawn happens, so a fourth call site cannot be added without it. `DETACHED_PROCESS` would hide it too, and is wrong: it costs the pipes and the exit status the rest of this design is built on.
+
 ### 4.8 The coverage guard
 
 **Every other stage can fail loudly. The segmenter fails silently and destroys

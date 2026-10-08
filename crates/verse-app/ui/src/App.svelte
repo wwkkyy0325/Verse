@@ -42,6 +42,7 @@
     type Refusal,
     type EntryState,
     type ModelChoice,
+    type Screen,
     type State,
   } from "$lib/api";
   import { Button } from "$lib/components/ui/button";
@@ -53,6 +54,10 @@
     DialogTitle,
   } from "$lib/components/ui/dialog";
   import { Progress } from "$lib/components/ui/progress";
+
+  /// The screen that has a transcript on it, for the helpers that only make
+  /// sense for one.
+  type DoneScreen = Extract<Screen, { kind: "done" }>;
 
   let view = $state<State>({
     screen: { kind: "empty" },
@@ -473,6 +478,20 @@
     }
   }
 
+  /// Start the queue a previous session left behind.
+  ///
+  /// It can refuse, and the refusal is the useful half: a queue whose model is
+  /// still missing is one that would only fail, so the answer says which model
+  /// to fetch rather than starting something.
+  async function resumeWaiting() {
+    message = null;
+    try {
+      await resumeQueue();
+    } catch (cause) {
+      message = String(cause);
+    }
+  }
+
   /// Fetch one model, by id — from its card, or from the file waiting on it.
   async function startDownload(model: string) {
     message = null;
@@ -583,6 +602,33 @@
   function modelName(id: string | null): string {
     if (!id) return "";
     return catalog.find((model) => model.id === id)?.name ?? id;
+  }
+
+  /// The last segment of a path, for the places that show a name rather than
+  /// where a file is.
+  ///
+  /// Both separators: a path from the backend arrives in the platform's own
+  /// style, and nothing here should have to know which platform that was.
+  function baseName(path: string): string {
+    const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+    return cut === -1 ? path : path.slice(cut + 1);
+  }
+
+  /// The line under a finished transcript, as one string.
+  ///
+  /// Built once rather than written into the markup twice, because it is both
+  /// what the bar renders and what the bar's tooltip says. The bar shares one
+  /// fixed width with three buttons, so it truncates — and the first thing to
+  /// go is the path, which is the part somebody who wants to open the file
+  /// actually needs. Hovering is where the whole sentence gets to be read.
+  function doneLine(screen: DoneScreen): string {
+    const parts = [
+      `完成 · 用 ${modelName(shownEngine())} 识别 · 共 ${view.segments.length} 段`,
+    ];
+    if (screen.exported) {
+      parts.push(`已保存到 ${baseName(screen.exported)}`);
+    }
+    return parts.join(" · ");
   }
 </script>
 
@@ -788,7 +834,7 @@
         {#if waiting > 0 && !busy}
           <div class="bg-muted/40 rounded-md border px-3 py-2">
             <p class="text-muted-foreground text-xs">上次有 {waiting} 个文件没跑完</p>
-            <Button class="mt-2 w-full" size="sm" onclick={() => void resumeQueue()}>
+            <Button class="mt-2 w-full" size="sm" onclick={() => void resumeWaiting()}>
               继续
             </Button>
           </div>
@@ -902,10 +948,11 @@
               {view.screen.stopping ? "正在停止…" : "取消"}
             </Button>
           {:else}
-            <span class="text-muted-foreground min-w-0 truncate text-xs">
-              完成 · 用 {modelName(shownEngine())} 识别 · 共 {view.segments.length} 段{#if view.screen.exported}
-                · 已保存到 {view.screen.exported}{/if}
-            </span>
+            <!-- Built once and used twice: the bar renders it, and hovering
+                 gives it back whole. What truncation eats first is the path,
+                 and the path is the part somebody looking for the file needs. -->
+            {@const line = doneLine(view.screen)}
+            <span class="text-muted-foreground min-w-0 truncate text-xs" title={line}>{line}</span>
             {#if view.screen.saveError}
               <!-- Not a failure of the job: the transcript is here and 另存为
                    still works. It says the result is not in the output folder,

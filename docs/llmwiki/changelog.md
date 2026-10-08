@@ -2712,3 +2712,118 @@ model that says it is ready and does not work.
 comes with `verse model fetch sensevoice`. It did not.
 
 404 tests, clippy clean, `svelte-check` 0 errors.
+
+## 2026-10-08 — Three things only an installation could show, and a fourth it uncovered
+
+The maintainer ran the 0.1.0 draft on a machine that is not this one, which is
+the first time anything here has been installed rather than run from a
+checkout. Three reports, and every one of them was invisible from the
+development machine for the same reason: the dev machine has what the other one
+lacks. Fixing the second turned up a fourth, which is the last section here.
+
+**A black console window, three times.** 闪烁两个，第三个常驻不消失. `verse-app`
+is a GUI program (`windows_subsystem = "windows"`) and ffmpeg is a console
+program, so Windows gives each child a console of its own and draws it: two that
+flash past — `locate`'s `-version` probe on `PATH`, then `version()`'s own — and
+one held for as long as the decoder lives, which is the length of the file.
+
+Fixed at the only place a spawn happens. `ffmpeg::command` is now the sole way
+to build one, and on Windows it sets `CREATE_NO_WINDOW`; all four call sites go
+through it. `DETACHED_PROCESS` would also have hidden the window and is the
+wrong answer — it costs the pipes and the exit status, and the whole sidecar
+design rests on both.
+
+**A file dropped while the model was missing, stuck for good.** The guard in
+`file_chosen` covered a running job and stopped there, and a file waiting for a
+model sets neither `job` nor `running`. So a second drop found the slot free and
+took it, and with the slot it took everything that follows the *selected*
+screen: the download's progress (`download_changed` writes to the active
+screen, so the first file's bar froze where it stood) and the job that starts
+when the model arrives (`model_ready` starts the selected file, so the download
+ran the second file and left the first waiting for a model that was by then on
+disk).
+
+The dead end was complete. Selecting the stranded row offered 下载模型, pressing
+it hit `fetch_model`'s `all_present` guard, and the answer was `已经在本机了`.
+The only way out was to remove the row and drop the file again.
+
+`awaiting_model` makes a file waiting for a model hold the slot exactly as a
+running job does, and the second drop queues behind it — 等待中 — and follows it
+through the ordinary queue. `fetch_model` on a model that is already present now
+says so on `UPDATE` and starts whatever was waiting, instead of refusing.
+
+**The finished line could not be read in full.** It is one fixed width beside
+three buttons, so it truncates; and the path in it was a bare file name, because
+`view_of` passed `file_label`, so the folder was never on screen to be truncated.
+The done screen now carries the whole path, the bar shows its last segment, and
+the line has a `title` — hovering is where the sentence gets to be read.
+
+**Five new tests, and three of them were run against the old code to check they
+were worth having.** All three failed, naming the bug:
+
+```
+the second file took the wait that belongs to the first
+the download never reached the file waiting for it: Idle
+assertion `left == right` failed: the model started the wrong file
+  left: Transcribe("b.wav")   right: Transcribe("a.wav")
+```
+
+The first attempt at the download test passed against the old code and had to be
+rewritten: it asked the *screen*, and on the old code the screen belonged to the
+second file. Asking the stranded file's own entry is the thing that pins it.
+
+**Two of the three fixes are not verified from here.** No console window is
+drawn, or not, on somebody's screen — what the new test can assert is that
+`CREATE_NO_WINDOW` did not detach the process, which is the property that made
+it the right flag. And the `fetch_model` branch is a command, so the only way to
+run it is with a window. Both are tasks/first-run-fixes.md's "by eye" column.
+
+**And the wart the second fix exposed, taken in the same pass.** `pending()` and
+`unfinished()` read `running` and `queue`, and a file waiting for a model is in
+neither — so it was not written to `pending.json`, was not counted by the quit
+dialog, and was gone from the list on the next launch. Nothing was lost, since
+nothing had started; the file itself was.
+
+Including it was a line. What made it more than a line is what the restore does
+with it: `restore_pending` put every path through `enqueue`, so the row came back
+as 等待中 — a state it was never in, contradicting that function's own comment
+— and 继续 would have started it, because `take_next` walks past whatever is in
+front and what was in front was a file holding the slot rather than a running
+job. `restore_pending` now takes `model_ready` and puts the first file back on
+`NeedsModel` with the rest behind it, `start_next` refuses while a file holds the
+slot, and `resume` says which model is missing instead of doing nothing.
+`model_present` came out of that, so the drop and the restore ask one question
+with one answer.
+
+**Five new tests, then three more, and six of the eight were run against the old
+code to check they were worth having.** All six failed, naming the bug:
+
+```
+the second file took the wait that belongs to the first
+the download never reached the file waiting for it: Idle
+assertion `left == right` failed: the model started the wrong file
+  left: Transcribe("b.wav")   right: Transcribe("a.wav")
+assertion `left == right` failed: Some("a.wav") vs None   ← 继续 started one anyway
+the first file has to be the one offering the download: Queued { input: "a.wav" }
+assertion `left == right` failed: 1 vs 2                  ← pending() missed the row
+```
+
+The first attempt at the download test passed against the old code and had to be
+rewritten: it asked the *screen*, and on the old code the screen belonged to the
+second file. Asking the stranded file's own entry is the thing that pins it.
+
+**Two of the fixes are not verified from here.** No console window is drawn, or
+not, on somebody's screen — what the new test can assert is that
+`CREATE_NO_WINDOW` did not detach the process, which is the property that made it
+the right flag. And the `fetch_model` and `resume` branches are commands, so the
+only way to run them is with a window. Both are tasks/first-run-fixes.md's "by
+eye" column.
+
+**One thing deliberately left alone:** the 继续 bar says 上次有 N 个文件没跑完
+whenever anything is queued, including a file dropped a moment ago in this
+session. Pre-existing, and not this.
+
+The entry above this one said 404 tests. The same command on `91d1453` says 409;
+it was taken from the run before the five tests that entry describes. What is
+measured now: **417 tests, clippy clean, `svelte-check` 0 errors** — 409 at
+`91d1453`, plus the five above and the three here.

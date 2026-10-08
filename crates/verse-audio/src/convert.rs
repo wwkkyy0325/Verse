@@ -5,7 +5,6 @@
 //! write.
 
 use std::path::PathBuf;
-use std::process::Command;
 
 use verse_core::{Error, ErrorKind, Result};
 
@@ -88,9 +87,9 @@ pub fn transcode(request: &TranscodeRequest) -> Result<()> {
         ));
     }
 
-    let ffmpeg = ffmpeg::locate()?;
+    let program = ffmpeg::locate()?;
 
-    let mut cmd = Command::new(ffmpeg);
+    let mut cmd = ffmpeg::command(&program);
     cmd.arg("-hide_banner")
         .arg("-loglevel")
         .arg("error")

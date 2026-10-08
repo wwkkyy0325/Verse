@@ -173,15 +173,7 @@ fn transcribe(app: AppHandle, path: String) -> Result<(), String> {
             state.model().to_string()
         };
 
-        let ready = match Catalog::load_or_embedded(&models.join("catalog.json")) {
-            Ok(catalog) => catalog
-                .find(&model)
-                .map(|spec| catalog.all_present(spec, &models))
-                .unwrap_or(false),
-            // A broken catalogue is not worth refusing to work over; the model
-            // is either on disk or it is not, and the pipeline will say so.
-            Err(_) => false,
-        };
+        let ready = model_present(&models, &model);
 
         let mut state = app_state.state.lock().expect("state mutex poisoned");
         state.file_chosen(input, ready)
@@ -287,6 +279,32 @@ fn models() -> Result<Vec<bridge::ModelChoice>, String> {
             default: spec.id == state::DEFAULT_MODEL,
         })
         .collect())
+}
+
+/// Whether this model can actually run here: every file of it, and of whatever
+/// it needs, on disk.
+///
+/// `all_present` rather than `is_present`, because a model that is missing the
+/// VAD it names looks ready and fails on the first file.
+///
+/// **A catalogue that will not load answers `false` rather than refusing to
+/// work.** The question a caller has is "can this run", the model is either on
+/// disk or it is not, and the pipeline says what is missing with better words
+/// than a list of files could.
+///
+/// A function because two callers ask — starting a file, and putting back the
+/// queue a previous process left — and because the answer has to be the same
+/// one both times: a restore that disagreed with a drop would hand back a file
+/// the window refused a moment earlier.
+fn model_present(models: &Path, model: &str) -> bool {
+    Catalog::load_or_embedded(&models.join("catalog.json"))
+        .ok()
+        .and_then(|catalog| {
+            catalog
+                .find(model)
+                .map(|spec| catalog.all_present(spec, models))
+        })
+        .unwrap_or(false)
 }
 
 /// Where the record of finished transcripts lives.
@@ -540,7 +558,13 @@ fn restore_pending(app: &AppHandle) {
             .into_iter()
             .filter(|input| input.is_file())
             .collect();
-        state.restore_pending(still_there);
+
+        // The same question, for the same reason, about the model — and read
+        // after the engine above, because it is the engine that was just
+        // settled on that decides which model is being asked about.
+        let ready = model_present(&models_dir(), state.model());
+
+        state.restore_pending(still_there, ready);
     }
 
     // Rewrite the record in the form the restore left it: a path that has been
@@ -711,20 +735,34 @@ fn select_model(app: AppHandle, id: String) -> Result<(), String> {
 /// Returns as soon as the work is under way. Everything else arrives on
 /// [`UPDATE`], as `transcribe` does.
 #[tauri::command]
-fn resume(app: AppHandle) {
+fn resume(app: AppHandle) -> Result<(), String> {
     let models = models_dir();
 
-    let next = {
+    let (next, blocked_on_model) = {
         let app_state = app.state::<App>();
         let mut state = app_state.state.lock().expect("state mutex poisoned");
-        state.start_next()
+        let blocked = state.awaiting_model();
+        (state.start_next(), blocked)
     };
 
     match next {
-        Some(input) => bridge::start(&app, input, models),
+        Some(input) => {
+            bridge::start(&app, input, models);
+            Ok(())
+        }
+        // A model is what is in the way, and a model is something the person
+        // can go and get. Saying so is the difference between a button that
+        // does nothing and one that says what it is waiting for.
+        None if blocked_on_model => {
+            bridge::push_state(&app);
+            Err("还有文件在等识别模型，先在左边的卡片里下载，模型到了会自动开始。".to_string())
+        }
         // Nothing waiting, or something already running. Either way the window
         // is owed an answer, and the current state is the answer.
-        None => bridge::push_state(&app),
+        None => {
+            bridge::push_state(&app);
+            Ok(())
+        }
     }
 }
 
@@ -807,8 +845,22 @@ fn fetch_model(app: AppHandle, model: String) -> Result<(), String> {
         return Err(format!("模型清单里没有 {model} 这个模型。"));
     };
 
+    // Already here. Reachable from a screen drawn before the download finished
+    // — the file was dropped, the model was fetched from the panel, and this
+    // click is the person asking again. Refusing was a dead end: the row went
+    // on saying 需要下载, pressing the button said 已经在本机了, and neither of
+    // those is a way forward. Saying the model is ready and starting whatever
+    // was waiting is.
     if catalog.all_present(spec, &models_root) {
-        return Err(format!("{model} 已经在本机了。"));
+        let _ = app.emit(
+            UPDATE,
+            Update::Download {
+                model,
+                download: DownloadView::Ready,
+            },
+        );
+        start_waiting_job(&app);
+        return Ok(());
     }
 
     // Whatever this model cannot run without. Fetched first, and quietly:

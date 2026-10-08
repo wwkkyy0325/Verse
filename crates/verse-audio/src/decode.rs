@@ -6,7 +6,7 @@
 
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
-use std::process::{Child, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdout, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -62,9 +62,9 @@ impl FfmpegDecoder {
             ));
         }
 
-        let ffmpeg = ffmpeg::locate()?;
+        let program = ffmpeg::locate()?;
 
-        let mut child = Command::new(ffmpeg)
+        let mut child = ffmpeg::command(&program)
             .arg("-hide_banner")
             // `info`, not `error`, and this is the whole reason the decoder can
             // report progress at all: ffmpeg prints `Duration:` in its input

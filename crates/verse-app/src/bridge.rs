@@ -534,7 +534,15 @@ pub fn view_of(screen: &Screen) -> ScreenView {
         },
         Screen::Done(done) => ScreenView::Done {
             file: file_label(&done.input),
-            exported: done.exported.as_ref().map(|path| file_label(path)),
+            // The whole path, where every other screen gets a name. The window
+            // shows the last segment in the finished bar — which is one fixed
+            // width and truncates — and gives the line a tooltip carrying the
+            // whole thing, so hovering answers what the bar has no room for:
+            // *where* the transcript went.
+            exported: done
+                .exported
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned()),
             save_error: done.save_error.clone(),
         },
         Screen::Failed(failed) => ScreenView::Failed {
@@ -1144,6 +1152,32 @@ mod tests {
         match view_of(&Screen::Working(working)) {
             ScreenView::Working { file, .. } => assert_eq!(file, "第三季度会议.m4a"),
             other => panic!("expected a working screen, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_finished_transcript_sends_the_whole_path_it_was_written_to() {
+        // The one screen that does *not* answer with a name. The finished bar
+        // is a fixed width in a row of buttons, so it shows the last segment;
+        // the tooltip on that line is where the folder gets to be read, and it
+        // had nothing to add while this sent `file_label`.
+        let done = Done {
+            input: PathBuf::from(r"C:\Users\someone\录音\会议.m4a"),
+            transcript: Default::default(),
+            exported: Some(PathBuf::from(r"C:\Users\someone\Documents\Verse\会议.srt")),
+            save_error: None,
+        };
+
+        match view_of(&Screen::Done(done)) {
+            ScreenView::Done { file, exported, .. } => {
+                assert_eq!(file, "会议.m4a", "the input is still shown by name");
+                assert_eq!(
+                    exported.as_deref(),
+                    Some(r"C:\Users\someone\Documents\Verse\会议.srt"),
+                    "the folder is the part the bar has no room for"
+                );
+            }
+            other => panic!("expected a done screen, got {other:?}"),
         }
     }
 
