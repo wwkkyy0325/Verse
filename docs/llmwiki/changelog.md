@@ -2827,3 +2827,17 @@ The entry above this one said 404 tests. The same command on `91d1453` says 409;
 it was taken from the run before the five tests that entry describes. What is
 measured now: **417 tests, clippy clean, `svelte-check` 0 errors** — 409 at
 `91d1453`, plus the five above and the three here.
+
+### Shipped as 0.1.1, which is the first version bump this project has done
+
+`v0.1.0` moved twice and published nothing, so the tag was the only version
+anybody had to think about. A second build is different: the installers are named
+from `tauri.conf.json`'s `version`, and the window's 关于 dialog from
+`env!("CARGO_PKG_VERSION")`. Tagging `v0.1.1` over a 0.1.0 tree would have
+produced a release called *Verse v0.1.1* holding `Verse_0.1.0_x64-setup.exe`,
+next to the 0.1.0 draft that was already there — two installers claiming the same
+version and doing different things.
+
+So both are 0.1.1, in the two files that carry a version and nowhere else.
+Everything else in the tree that says `0.1.0` is a record of something that
+happened, and stays.
