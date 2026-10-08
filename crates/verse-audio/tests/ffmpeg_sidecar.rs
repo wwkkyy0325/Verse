@@ -12,8 +12,14 @@ use verse_core::{AudioFormat, AudioSource};
 const SECONDS: u32 = 2;
 const SOURCE_RATE: u32 = 44_100;
 
+/// A scratch path no other run of these tests can be using.
+///
+/// The process id is in there because the names are otherwise fixed, and two
+/// copies of this binary running at once — two terminals, or a reproduction loop
+/// — would write the same files and fail each other. `name` separates the tests
+/// within one process, which is the other half of the same problem.
 fn temp_file(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("verse-audio-test-{name}"))
+    std::env::temp_dir().join(format!("verse-audio-test-{}-{name}", std::process::id()))
 }
 
 /// A 2 s stereo 44.1 kHz tone.
@@ -21,11 +27,24 @@ fn temp_file(name: &str) -> PathBuf {
 /// Deliberately neither the target rate nor the target channel count, so that
 /// decoding has to resample and downmix rather than pass samples straight
 /// through.
-fn make_source() -> Option<PathBuf> {
+///
+/// **`name` is not decoration.** Four tests in this file need a source, they run
+/// in parallel threads, and this used to write them all to one path with `-y`.
+/// So one test rewrote the file while another was opening it, ffmpeg answered
+/// `Invalid data found when processing input`, and whichever test was reading at
+/// that moment failed for a reason that had nothing to do with what it was
+/// testing. It is intermittent by nature: a twenty-run loop reproduced it ten
+/// times, and every run of it alone passed.
+///
+/// The failure it produced was misleading, too. The test that noticed was the
+/// one asserting a duration, and a file ffmpeg cannot open has no `Duration:`
+/// line — so it read as "the decoder stopped reporting lengths" when the decoder
+/// was fine and the fixture was being trampled.
+fn make_source(name: &str) -> Option<PathBuf> {
     if !ffmpeg_available() {
         return None;
     }
-    let path = temp_file("source.wav");
+    let path = temp_file(name);
     let status = Command::new(locate_ffmpeg().ok()?)
         .arg("-hide_banner")
         .arg("-loglevel")
@@ -68,7 +87,7 @@ fn missing_input_is_reported_before_ffmpeg_is_invoked() {
 
 #[test]
 fn decodes_with_resampling_and_downmixing() {
-    let Some(src) = make_source() else {
+    let Some(src) = make_source("source-resample.wav") else {
         eprintln!("skipping: ffmpeg not available");
         return;
     };
@@ -91,7 +110,7 @@ fn decodes_with_resampling_and_downmixing() {
 
 #[test]
 fn decodes_only_the_first_chunk_on_demand() {
-    let Some(src) = make_source() else {
+    let Some(src) = make_source("source-chunks.wav") else {
         eprintln!("skipping: ffmpeg not available");
         return;
     };
@@ -150,7 +169,7 @@ fn corrupt_input_fails_with_ffmpeg_message_rather_than_hanging() {
 
 #[test]
 fn converts_between_formats() {
-    let Some(src) = make_source() else {
+    let Some(src) = make_source("source-convert.wav") else {
         eprintln!("skipping: ffmpeg not available");
         return;
     };
@@ -196,7 +215,7 @@ fn the_decoder_reports_how_long_the_file_is() {
     // the way the pipeline invokes it, actually puts a duration where the drain
     // thread can find it. Without it the parser could be perfect and the
     // feature still absent.
-    let Some(path) = make_source() else {
+    let Some(path) = make_source("source-duration.wav") else {
         return;
     };
 
